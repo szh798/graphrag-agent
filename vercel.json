@@ -1,0 +1,16 @@
+{
+  "buildCommand": "cd frontend && npm run build",
+  "outputDirectory": "frontend/dist/client",
+  "installCommand": "cd frontend && npm ci --legacy-peer-deps",
+  "framework": "vite",
+  "rewrites": [
+    {
+      "source": "/api/v1/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+
+**/.git_embedded_backup/
+.DS_Store
+.env
+.env.*
+!.env.example
+.wrangler/
+dist/
+node_modules/
+*.tsbuildinfo

@@ -1,0 +1,37 @@
+**/.git_embedded_backup/
+
+# Local secrets (commit only sanitized templates)
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.offline.example
+
+# Python
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.egg-info/
+
+# JavaScript / frontend build output
+**/node_modules/
+frontend/dist/
+frontend/.wrangler/
+**/*.tsbuildinfo
+
+# Runtime data and generated artifacts
+backend/data/
+backend/output/
+.demo-runtime/
+.playwright-cli/
+*.log
+*.sqlite
+*.sqlite3
+
+# Local deployment metadata
+.vercel/
+
+# OS / editor files
+.DS_Store
+settings.json

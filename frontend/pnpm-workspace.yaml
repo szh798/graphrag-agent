@@ -1,0 +1,8 @@
+allowBuilds:
+  '@tailwindcss/oxide': true
+  esbuild: true
+  sharp: true
+  workerd: true
+
+overrides:
+  vite: 6.4.3
