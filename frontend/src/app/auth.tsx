@@ -70,7 +70,12 @@ function ClerkRuntimeBridge({ children }: { children: ReactNode }) {
 
 export function AppAuthProvider({ children }: { children: ReactNode }) {
   const publishableKey = runtimePublishableKey();
-  if (!publishableKey || publishableKey.startsWith('%VITE_')) {
+  if (
+    !publishableKey ||
+    publishableKey === 'undefined' ||
+    publishableKey === 'null' ||
+    publishableKey.startsWith('%VITE_')
+  ) {
     return <AuthRuntimeContext.Provider value={anonymousState}>{children}</AuthRuntimeContext.Provider>;
   }
 
