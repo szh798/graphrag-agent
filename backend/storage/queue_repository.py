@@ -34,8 +34,8 @@ class LocalThreadQueueRepository:
 
 class UpstashRedisQueueRepository:
     def __init__(self):
-        self.rest_url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
-        self.rest_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+        self.rest_url = (os.getenv("UPSTASH_REDIS_REST_URL") or os.getenv("KV_REST_API_URL", "")).strip().rstrip("/")
+        self.rest_token = (os.getenv("UPSTASH_REDIS_REST_TOKEN") or os.getenv("KV_REST_API_TOKEN", "")).strip()
 
     def profile(self) -> dict:
         return {
@@ -93,7 +93,11 @@ def get_queue_repository() -> LocalThreadQueueRepository | UpstashRedisQueueRepo
     backend = os.getenv("GRAPHRAG_QUEUE_BACKEND", "local_thread").strip().lower()
     if backend in {"thread", "threads", "local", "memory", "in_memory"}:
         backend = "local_thread"
-    key = (backend, os.getenv("UPSTASH_REDIS_REST_URL", ""), os.getenv("UPSTASH_REDIS_REST_TOKEN", ""))
+    key = (
+        backend,
+        os.getenv("UPSTASH_REDIS_REST_URL") or os.getenv("KV_REST_API_URL", ""),
+        os.getenv("UPSTASH_REDIS_REST_TOKEN") or os.getenv("KV_REST_API_TOKEN", ""),
+    )
     if _CACHE_REPO is not None and _CACHE_KEY == key:
         return _CACHE_REPO
     _CACHE_KEY = key

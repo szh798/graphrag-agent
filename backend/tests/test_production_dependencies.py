@@ -72,6 +72,23 @@ class ProductionDependencyTests(unittest.TestCase):
         self.assertEqual(components["blob_storage"]["backend"], "vercel_blob")
         self.assertEqual(components["task_queue"]["backend"], "upstash")
 
+    def test_upstash_queue_accepts_marketplace_kv_environment_names(self):
+        queue_repository = importlib.import_module("storage.queue_repository")
+
+        with patch.dict("os.environ", {
+            "GRAPHRAG_QUEUE_BACKEND": "upstash",
+            "UPSTASH_REDIS_REST_URL": "",
+            "UPSTASH_REDIS_REST_TOKEN": "",
+            "KV_REST_API_URL": "https://queue.example",
+            "KV_REST_API_TOKEN": "token",
+        }, clear=False):
+            queue_repository.reset_queue_repository_cache()
+            repo = queue_repository.get_queue_repository()
+
+        self.assertEqual(repo.profile()["backend"], "upstash")
+        self.assertTrue(repo.profile()["url_configured"])
+        self.assertTrue(repo.profile()["token_configured"])
+
 
 if __name__ == "__main__":
     unittest.main()

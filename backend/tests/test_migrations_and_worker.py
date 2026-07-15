@@ -62,6 +62,32 @@ class MigrationsAndWorkerTests(unittest.TestCase):
         self.assertEqual(result["job_id"], "job_1")
         self.assertEqual(processed, [7])
 
+    def test_documents_only_import_does_not_copy_private_runtime_history(self):
+        from scripts import import_file_store_to_postgres as importer
+
+        calls: list[tuple[str, str]] = []
+
+        class StubAppRepo:
+            def save_document(self, doc):
+                calls.append(("doc", doc["doc_id"]))
+
+            def __getattr__(self, name):
+                raise AssertionError(f"documents-only import must not call {name}")
+
+        with (
+            patch.object(importer.fs, "load_docs_index", return_value={"doc_1": {"doc_id": "doc_1"}}),
+            patch.object(importer.fs, "list_all_jobs", return_value=[{"job_id": "job_1"}]),
+            patch.object(importer.fs, "list_chat_sessions", return_value=[{"id": "s_1"}]),
+            patch.object(importer.fs, "load_query_history", return_value=[{"id": "q_1"}]),
+            patch.object(importer.fs, "list_batch_metas", return_value=[{"batch_id": "b_1"}]),
+            patch.object(importer.app_store, "get_app_repository", return_value=StubAppRepo()),
+        ):
+            result = importer.import_file_store_app_data(dry_run=False, documents_only=True)
+
+        self.assertEqual(calls, [("doc", "doc_1")])
+        self.assertEqual(result["imported"]["documents"], 1)
+        self.assertEqual(result["imported"]["sessions"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

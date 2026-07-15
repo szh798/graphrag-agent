@@ -207,6 +207,7 @@ export interface ApiHealthData {
   status: string;
   version: string;
   uptime_seconds: number;
+  production_ready?: boolean;
   components: {
     document_parser?: ApiComponentHealth;
     mineru_venv: ApiComponentHealth;

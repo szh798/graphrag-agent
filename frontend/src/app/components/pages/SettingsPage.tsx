@@ -82,7 +82,7 @@ export function SettingsPage() {
   const appDb = health?.components.app_database;
   const blobStorage = health?.components.blob_storage;
   const taskQueue = health?.components.task_queue;
-  const isEphemeral = storage?.persistent === false || storage?.persistence === 'ephemeral';
+  const productionReady = health?.production_ready === true;
 
   return (
     <div className="page-shell settings-page p-6" style={{ maxWidth: 1180, margin: '0 auto' }}>
@@ -109,13 +109,13 @@ export function SettingsPage() {
         </button>
       </div>
 
-      {isEphemeral && (
+      {health && !productionReady && (
         <div className="flex items-start gap-3 rounded-lg p-4 mb-4" style={{ background: 'rgba(210,153,34,0.1)', border: '1px solid rgba(210,153,34,0.35)' }}>
           <AlertTriangle size={18} style={{ color: 'var(--yellow)', flexShrink: 0, marginTop: 1 }} />
           <div>
-            <div style={{ color: 'var(--yellow)', fontSize: 13, fontWeight: 600 }}>当前线上存储为临时文件系统</div>
+            <div style={{ color: 'var(--yellow)', fontSize: 13, fontWeight: 600 }}>生产持久化依赖尚未全部就绪</div>
             <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 4, lineHeight: 1.6 }}>
-              {storage?.warning ?? '生产环境请接入数据库、对象存储和后台队列。'}
+              请检查图谱数据库、业务数据库、对象存储和后台队列。
             </div>
           </div>
         </div>
@@ -138,9 +138,9 @@ export function SettingsPage() {
           <Field label="配置详情" value="公开环境已隐藏" />
         </SettingsCard>
 
-        <SettingsCard icon={<Database size={17} />} title="数据存储" component={storage}>
-          <Field label="模式" value={storage?.mode} />
-          <Field label="持久化" value={storage?.persistent ? '持久' : storage?.persistence === 'ephemeral' ? '临时' : '—'} />
+        <SettingsCard icon={<Database size={17} />} title="临时处理目录" component={storage}>
+          <Field label="用途" value="解析过程缓存" />
+          <Field label="模式" value={storage?.persistence === 'ephemeral' ? '临时（正常）' : storage?.persistence} />
         </SettingsCard>
 
         <SettingsCard icon={<Database size={17} />} title="图谱数据库" component={graphDb}>

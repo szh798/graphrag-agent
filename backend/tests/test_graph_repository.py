@@ -89,6 +89,19 @@ class GraphRepositoryTests(unittest.TestCase):
             repo = graph_repository.get_graph_repository()
             self.assertEqual(repo.profile()["backend"], "neo4j")
 
+    def test_repository_factory_supports_postgres_graph_storage(self):
+        graph_repository = importlib.import_module("storage.graph_repository")
+        with patch.dict("os.environ", {
+            "GRAPHRAG_GRAPH_BACKEND": "postgres",
+            "DATABASE_URL": "postgresql://example.invalid/graphrag",
+        }, clear=False):
+            graph_repository.reset_graph_repository_cache()
+            repo = graph_repository.get_graph_repository()
+
+        self.assertIsInstance(repo, graph_repository.PostgresGraphRepository)
+        self.assertEqual(repo.profile()["backend"], "postgres")
+        self.assertTrue(repo.profile()["persistent"])
+
     def test_kg_and_search_services_delegate_to_graph_repository(self):
         kg_service = importlib.import_module("services.kg_service")
         search_service = importlib.import_module("services.search_service")

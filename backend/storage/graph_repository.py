@@ -5,7 +5,9 @@ the existing JSON filesystem behavior.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import time
 from typing import Any
 
 import networkx as nx
@@ -21,6 +23,18 @@ def _clean_props(data: dict) -> dict:
     return {k: v for k, v in data.items() if v is not None}
 
 
+def _edge_id(edge: dict, doc_id: str) -> str:
+    explicit = str(edge.get("id") or "").strip()
+    if explicit:
+        return explicit
+    source = str(edge.get("source") or "")
+    target = str(edge.get("target") or "")
+    relation = str(edge.get("relation") or "RELATED_TO")
+    page = str(edge.get("page") or 0)
+    raw = "|".join((doc_id, min(source, target), max(source, target), relation, page))
+    return "edge_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
 class FileGraphRepository:
     def profile(self) -> dict:
         return {"backend": "filesystem", **fs.storage_profile()}
@@ -34,9 +48,15 @@ class FileGraphRepository:
             **fs.storage_profile(),
         }
 
+    def _load_nodes(self) -> list[dict]:
+        return fs.load_kg_nodes()
+
+    def _load_edges(self) -> list[dict]:
+        return fs.load_kg_edges()
+
     def _load_graph(self) -> nx.Graph:
-        nodes = fs.load_kg_nodes()
-        edges = fs.load_kg_edges()
+        nodes = self._load_nodes()
+        edges = self._load_edges()
         graph = nx.Graph()
         for node in nodes:
             graph.add_node(node["id"], **node)
@@ -54,7 +74,7 @@ class FileGraphRepository:
                   node_type: str | None = None,
                   doc_id: str | None = None,
                   confidence: str | None = None) -> dict:
-        nodes = [dict(item) for item in fs.load_kg_nodes()]
+        nodes = [dict(item) for item in self._load_nodes()]
         graph = self._load_graph()
         degrees = dict(graph.degree())
         for node in nodes:
@@ -74,7 +94,7 @@ class FileGraphRepository:
     def get_edges(self, page: int = 1, page_size: int = 100,
                   doc_id: str | None = None,
                   relation: str | None = None) -> dict:
-        edges = [dict(item) for item in fs.load_kg_edges()]
+        edges = [dict(item) for item in self._load_edges()]
         if doc_id:
             edges = [edge for edge in edges if edge.get("doc_id") == doc_id]
         if relation:
@@ -84,7 +104,7 @@ class FileGraphRepository:
         return {"total": total, "page": page, "page_size": page_size, "items": edges[start:start + page_size]}
 
     def get_node_detail(self, node_id: str) -> dict | None:
-        nodes = [dict(item) for item in fs.load_kg_nodes()]
+        nodes = [dict(item) for item in self._load_nodes()]
         node = next((item for item in nodes if item["id"] == node_id), None)
         if not node:
             return None
@@ -102,7 +122,7 @@ class FileGraphRepository:
         return node
 
     def get_neighbors(self, node_id: str, hops: int = 1) -> dict | None:
-        nodes = [dict(item) for item in fs.load_kg_nodes()]
+        nodes = [dict(item) for item in self._load_nodes()]
         node = next((item for item in nodes if item["id"] == node_id), None)
         if not node:
             return None
@@ -135,8 +155,8 @@ class FileGraphRepository:
         }
 
     def get_stats(self) -> dict:
-        nodes = fs.load_kg_nodes()
-        edges = fs.load_kg_edges()
+        nodes = self._load_nodes()
+        edges = self._load_edges()
         graph = self._load_graph()
 
         type_dist: dict[str, int] = {}
@@ -174,8 +194,8 @@ class FileGraphRepository:
     def export_kg(self, doc_id: str | None = None) -> dict:
         from datetime import datetime, timezone
 
-        nodes = [dict(item) for item in fs.load_kg_nodes()]
-        edges = [dict(item) for item in fs.load_kg_edges()]
+        nodes = [dict(item) for item in self._load_nodes()]
+        edges = [dict(item) for item in self._load_edges()]
         graph = self._load_graph()
         degrees = dict(graph.degree())
         for node in nodes:
@@ -194,7 +214,7 @@ class FileGraphRepository:
         }
 
     def search_entities(self, q: str, entity_type: str | None = None, limit: int = 15) -> dict:
-        nodes = [dict(item) for item in fs.load_kg_nodes()]
+        nodes = [dict(item) for item in self._load_nodes()]
         graph = self._load_graph()
         degrees = dict(graph.degree())
         q_lower = q.lower()
@@ -206,7 +226,7 @@ class FileGraphRepository:
         return {"query": q, "total": len(matches), "items": matches[:limit]}
 
     def search_path(self, from_id: str, to_id: str, max_hops: int = 3) -> dict | None:
-        nodes = [dict(item) for item in fs.load_kg_nodes()]
+        nodes = [dict(item) for item in self._load_nodes()]
         node_map = {node["id"]: node for node in nodes}
         if from_id not in node_map or to_id not in node_map:
             return None
@@ -240,8 +260,8 @@ class FileGraphRepository:
         }
 
     def search_graph(self, q: str, include_neighbors: bool = False) -> dict:
-        nodes = [dict(item) for item in fs.load_kg_nodes()]
-        edges = [dict(item) for item in fs.load_kg_edges()]
+        nodes = [dict(item) for item in self._load_nodes()]
+        edges = [dict(item) for item in self._load_edges()]
         graph = self._load_graph()
         degrees = dict(graph.degree())
         q_lower = q.lower()
@@ -277,6 +297,237 @@ class FileGraphRepository:
 
     def remove_document(self, doc_id: str) -> tuple[int, int]:
         return fs.remove_doc_from_kg(doc_id)
+
+
+class PostgresGraphRepository(FileGraphRepository):
+    """Durable graph storage backed by Neon/Postgres JSONB tables.
+
+    Query behavior intentionally reuses the proven NetworkX read model from
+    ``FileGraphRepository`` while the source of truth lives in Postgres.
+    """
+
+    def __init__(self):
+        self.database_url = os.getenv("DATABASE_URL", os.getenv("POSTGRES_URL", "")).strip()
+        self._cache_expires_at = 0.0
+        self._cached_nodes: list[dict] = []
+        self._cached_edges: list[dict] = []
+
+    def profile(self) -> dict:
+        return {
+            "backend": "postgres",
+            "url_configured": bool(self.database_url),
+            "persistent": True,
+            "persistence": "persistent",
+        }
+
+    def _connect(self):
+        if not self.database_url:
+            raise ValueError("DATABASE_URL is required when GRAPHRAG_GRAPH_BACKEND=postgres")
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as exc:
+            raise RuntimeError("Install psycopg[binary]>=3.2.0 to use GRAPHRAG_GRAPH_BACKEND=postgres") from exc
+        return psycopg.connect(self.database_url, connect_timeout=5, row_factory=dict_row)
+
+    def _jsonb(self, data: dict | list):
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:
+            raise RuntimeError("Install psycopg[binary]>=3.2.0 to use GRAPHRAG_GRAPH_BACKEND=postgres") from exc
+        return Jsonb(data)
+
+    def ensure_schema(self) -> None:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS graph_documents (
+              doc_id TEXT PRIMARY KEY,
+              payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS graph_nodes (
+              node_id TEXT NOT NULL,
+              source_doc TEXT NOT NULL,
+              node_type TEXT NOT NULL DEFAULT '',
+              name TEXT NOT NULL DEFAULT '',
+              payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (node_id, source_doc)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS graph_nodes_doc_idx ON graph_nodes(source_doc)",
+            "CREATE INDEX IF NOT EXISTS graph_nodes_type_idx ON graph_nodes(node_type)",
+            "CREATE INDEX IF NOT EXISTS graph_nodes_name_idx ON graph_nodes(lower(name))",
+            """
+            CREATE TABLE IF NOT EXISTS graph_edges (
+              edge_id TEXT PRIMARY KEY,
+              source_id TEXT NOT NULL,
+              target_id TEXT NOT NULL,
+              doc_id TEXT NOT NULL,
+              relation TEXT NOT NULL DEFAULT 'RELATED_TO',
+              payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS graph_edges_doc_idx ON graph_edges(doc_id)",
+            "CREATE INDEX IF NOT EXISTS graph_edges_source_target_idx ON graph_edges(source_id, target_id)",
+            """
+            CREATE TABLE IF NOT EXISTS graph_chunks (
+              chunk_id TEXT PRIMARY KEY,
+              doc_id TEXT NOT NULL,
+              payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS graph_chunks_doc_idx ON graph_chunks(doc_id)",
+        ]
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                for statement in statements:
+                    cur.execute(statement)
+            conn.commit()
+
+    def health(self) -> dict:
+        if not self.database_url:
+            return {"status": "error", **self.profile()}
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+            return {"status": "ok", **self.profile()}
+        except Exception:
+            return {"status": "error", **self.profile()}
+
+    def _refresh_cache(self) -> None:
+        if time.monotonic() < self._cache_expires_at:
+            return
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM graph_nodes ORDER BY source_doc, node_id")
+                node_rows = cur.fetchall()
+                cur.execute("SELECT payload FROM graph_edges ORDER BY doc_id, edge_id")
+                edge_rows = cur.fetchall()
+        self._cached_nodes = [dict(row["payload"]) for row in node_rows if row.get("payload")]
+        self._cached_edges = [dict(row["payload"]) for row in edge_rows if row.get("payload")]
+        self._cache_expires_at = time.monotonic() + 30.0
+
+    def _load_nodes(self) -> list[dict]:
+        self._refresh_cache()
+        return [dict(item) for item in self._cached_nodes]
+
+    def _load_edges(self) -> list[dict]:
+        self._refresh_cache()
+        return [dict(item) for item in self._cached_edges]
+
+    def upsert_document_graph(self, document: dict, nodes: list[dict], edges: list[dict], chunks: list[dict] | None = None) -> None:
+        self.ensure_schema()
+        doc_id = str(document["doc_id"])
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM graph_chunks WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM graph_edges WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM graph_nodes WHERE source_doc = %s", (doc_id,))
+                cur.execute(
+                    """
+                    INSERT INTO graph_documents (doc_id, payload, updated_at)
+                    VALUES (%s, %s, now())
+                    ON CONFLICT (doc_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()
+                    """,
+                    (doc_id, self._jsonb({**document, "doc_id": doc_id})),
+                )
+                node_rows = []
+                for node in nodes:
+                    node_id = _node_id(node.get("id") or node.get("entity_id"))
+                    payload = {**node, "id": node_id, "source_doc": node.get("source_doc") or doc_id}
+                    node_rows.append({
+                        "node_id": node_id,
+                        "source_doc": payload["source_doc"],
+                        "node_type": payload.get("type", ""),
+                        "name": payload.get("name", ""),
+                        "payload": payload,
+                    })
+                if node_rows:
+                    cur.execute(
+                        """
+                        WITH rows AS (
+                          SELECT * FROM jsonb_to_recordset(%s)
+                          AS item(node_id TEXT, source_doc TEXT, node_type TEXT, name TEXT, payload JSONB)
+                        )
+                        INSERT INTO graph_nodes (node_id, source_doc, node_type, name, payload, updated_at)
+                        SELECT node_id, source_doc, node_type, name, payload, now() FROM rows
+                        ON CONFLICT (node_id, source_doc) DO UPDATE SET
+                          node_type = EXCLUDED.node_type,
+                          name = EXCLUDED.name,
+                          payload = EXCLUDED.payload,
+                          updated_at = now()
+                        """,
+                        (self._jsonb(node_rows),),
+                    )
+                edge_rows = []
+                for edge in edges:
+                    payload = {**edge, "doc_id": edge.get("doc_id") or doc_id}
+                    payload["id"] = _edge_id(payload, payload["doc_id"])
+                    edge_rows.append({
+                        "edge_id": payload["id"],
+                        "source_id": payload["source"],
+                        "target_id": payload["target"],
+                        "doc_id": payload["doc_id"],
+                        "relation": payload.get("relation", "RELATED_TO"),
+                        "payload": payload,
+                    })
+                if edge_rows:
+                    cur.execute(
+                        """
+                        WITH rows AS (
+                          SELECT * FROM jsonb_to_recordset(%s)
+                          AS item(edge_id TEXT, source_id TEXT, target_id TEXT, doc_id TEXT, relation TEXT, payload JSONB)
+                        )
+                        INSERT INTO graph_edges (edge_id, source_id, target_id, doc_id, relation, payload, updated_at)
+                        SELECT edge_id, source_id, target_id, doc_id, relation, payload, now() FROM rows
+                        ON CONFLICT (edge_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()
+                        """,
+                        (self._jsonb(edge_rows),),
+                    )
+                chunk_rows = []
+                for chunk in chunks or []:
+                    chunk_id = _node_id(chunk.get("chunk_id") or f"{doc_id}:page:{chunk.get('page', 0)}")
+                    payload = {**chunk, "chunk_id": chunk_id, "doc_id": chunk.get("doc_id") or doc_id}
+                    chunk_rows.append({"chunk_id": chunk_id, "doc_id": payload["doc_id"], "payload": payload})
+                if chunk_rows:
+                    cur.execute(
+                        """
+                        WITH rows AS (
+                          SELECT * FROM jsonb_to_recordset(%s)
+                          AS item(chunk_id TEXT, doc_id TEXT, payload JSONB)
+                        )
+                        INSERT INTO graph_chunks (chunk_id, doc_id, payload, updated_at)
+                        SELECT chunk_id, doc_id, payload, now() FROM rows
+                        ON CONFLICT (chunk_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()
+                        """,
+                        (self._jsonb(chunk_rows),),
+                    )
+            conn.commit()
+        self._cache_expires_at = 0.0
+
+    def remove_document(self, doc_id: str) -> tuple[int, int]:
+        self.ensure_schema()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) AS count FROM graph_nodes WHERE source_doc = %s", (doc_id,))
+                removed_nodes = int(cur.fetchone()["count"])
+                cur.execute("SELECT count(*) AS count FROM graph_edges WHERE doc_id = %s", (doc_id,))
+                removed_edges = int(cur.fetchone()["count"])
+                cur.execute("DELETE FROM graph_chunks WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM graph_edges WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM graph_nodes WHERE source_doc = %s", (doc_id,))
+                cur.execute("DELETE FROM graph_documents WHERE doc_id = %s", (doc_id,))
+            conn.commit()
+        self._cache_expires_at = 0.0
+        return removed_nodes, removed_edges
 
 
 class Neo4jGraphRepository:
@@ -777,11 +1028,11 @@ class Neo4jGraphRepository:
         return removed_nodes, 0
 
 
-_CACHE_KEY: tuple[str, str, str, str, str, str] | None = None
-_CACHE_REPO: FileGraphRepository | Neo4jGraphRepository | None = None
+_CACHE_KEY: tuple[str, ...] | None = None
+_CACHE_REPO: FileGraphRepository | PostgresGraphRepository | Neo4jGraphRepository | None = None
 
 
-def get_graph_repository() -> FileGraphRepository | Neo4jGraphRepository:
+def get_graph_repository() -> FileGraphRepository | PostgresGraphRepository | Neo4jGraphRepository:
     global _CACHE_KEY, _CACHE_REPO
     backend = os.getenv("GRAPHRAG_GRAPH_BACKEND", os.getenv("GRAPHRAG_STORAGE_BACKEND", "filesystem")).strip().lower()
     if backend in {"json", "file", "local"}:
@@ -793,11 +1044,17 @@ def get_graph_repository() -> FileGraphRepository | Neo4jGraphRepository:
         os.getenv("NEO4J_PASSWORD", ""),
         os.getenv("NEO4J_DATABASE", "neo4j"),
         os.getenv("NEO4J_VECTOR_DIMENSIONS", "1024"),
+        os.getenv("DATABASE_URL", os.getenv("POSTGRES_URL", "")),
     )
     if _CACHE_REPO is not None and _CACHE_KEY == key:
         return _CACHE_REPO
     _CACHE_KEY = key
-    _CACHE_REPO = Neo4jGraphRepository() if backend == "neo4j" else FileGraphRepository()
+    if backend == "neo4j":
+        _CACHE_REPO = Neo4jGraphRepository()
+    elif backend in {"postgres", "postgresql", "neon"}:
+        _CACHE_REPO = PostgresGraphRepository()
+    else:
+        _CACHE_REPO = FileGraphRepository()
     return _CACHE_REPO
 
 

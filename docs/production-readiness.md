@@ -5,7 +5,7 @@
 - `GRAPHRAG_APP_BACKEND=postgres` 与有效的 `DATABASE_URL`
 - `GRAPHRAG_BLOB_BACKEND=vercel_blob` 与有效的 `BLOB_READ_WRITE_TOKEN`
 - `GRAPHRAG_QUEUE_BACKEND=upstash` 与 Upstash REST URL/Token
-- `GRAPHRAG_GRAPH_BACKEND=neo4j` 与 AuraDB 连接配置
+- `GRAPHRAG_GRAPH_BACKEND=postgres` 使用 Neon 持久化图谱，或配置 Neo4j AuraDB
 - 独立的索引 Worker 持续消费队列
 - `PUBLIC_DOCUMENT_IDS` 只包含审核通过的公开演示文档
 

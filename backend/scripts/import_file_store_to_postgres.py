@@ -13,7 +13,7 @@ from storage import file_store as fs
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 
-def import_file_store_app_data(dry_run: bool = True) -> dict:
+def import_file_store_app_data(dry_run: bool = True, documents_only: bool = False) -> dict:
     docs = fs.load_docs_index()
     jobs = fs.list_all_jobs()
     sessions = fs.list_chat_sessions()
@@ -35,6 +35,8 @@ def import_file_store_app_data(dry_run: bool = True) -> dict:
     for doc in docs.values():
         repo.save_document(doc)
         result["imported"]["documents"] += 1
+    if documents_only:
+        return result
     for job in jobs:
         repo.save_job_meta(job["job_id"], job)
         result["imported"]["jobs"] += 1
@@ -53,8 +55,9 @@ def import_file_store_app_data(dry_run: bool = True) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import local JSON app data into Postgres/AppRepository.")
     parser.add_argument("--apply", action="store_true", help="write records instead of only printing a dry-run summary")
+    parser.add_argument("--documents-only", action="store_true", help="import document metadata without local sessions, queries, batches, or jobs")
     args = parser.parse_args()
-    print(json.dumps(import_file_store_app_data(dry_run=not args.apply), ensure_ascii=False, indent=2))
+    print(json.dumps(import_file_store_app_data(dry_run=not args.apply, documents_only=args.documents_only), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import importlib.util
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import APIRouter, Header
@@ -97,7 +98,7 @@ def _production_dependency_issues(components: dict[str, dict]) -> list[str]:
 
     issues: list[str] = []
     required_backends = {
-        "graph_database": {"neo4j"},
+        "graph_database": {"neo4j", "postgres"},
         "app_database": {"postgres"},
         "blob_storage": {"vercel_blob"},
     }
@@ -125,6 +126,19 @@ def _health_payload() -> dict:
     parser_mode = _normalized_parser_mode()
     active_parser = "mineru" if parser_mode == "mineru" or (parser_mode == "auto" and mineru_token) else "local"
     parser_status = "error" if parser_mode == "mineru" and not mineru_token else "ok"
+
+    graph_repo = graph_store.get_graph_repository()
+    app_repo = app_store.get_app_repository()
+    blob_repo = blob_store.get_blob_repository()
+    queue_repo = queue_store.get_queue_repository()
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="health") as executor:
+        futures = {
+            "graph_database": executor.submit(graph_repo.health),
+            "app_database": executor.submit(app_repo.health),
+            "blob_storage": executor.submit(blob_repo.health),
+            "task_queue": executor.submit(queue_repo.health),
+        }
+        dependency_health = {name: future.result() for name, future in futures.items()}
 
     raw_components: dict[str, dict] = {
         "document_parser": {
@@ -178,10 +192,7 @@ def _health_payload() -> dict:
             "uploads_dir_exists": fs.UPLOADS_DIR.exists(),
             **fs.storage_profile(),
         },
-        "graph_database": graph_store.get_graph_repository().health(),
-        "app_database": app_store.get_app_repository().health(),
-        "blob_storage": blob_store.get_blob_repository().health(),
-        "task_queue": queue_store.get_queue_repository().health(),
+        **dependency_health,
     }
 
     production_issues = _production_dependency_issues(raw_components)
