@@ -17,7 +17,7 @@
 
 ## 发布顺序
 
-1. 备份数据库并应用 schema。
+1. 按 [生产运维手册](operations-runbook.md) 备份数据库与 Blob，验证校验和并在隔离环境做恢复演练，然后再应用 schema。
 2. 验证对象存储和任务队列。
 3. 发布后端预览并执行 health/smoke。
 4. 发布 Sites 前端。

@@ -21,6 +21,7 @@ from services import local_parser
 from storage import graph_repository as graph_store
 from storage import queue_repository as queue_store
 from pipeline.embeddings import embed_texts
+from operations import report_event
 
 load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
@@ -424,7 +425,41 @@ def run_queued_job(job_id: str) -> dict | None:
 
 
 def process_next_index_job(timeout_seconds: int = 5) -> dict | None:
-    payload = queue_store.get_queue_repository().pop_index_job(timeout_seconds)
+    queue_repo = queue_store.get_queue_repository()
+    recovery = getattr(queue_repo, "recover_expired_jobs", lambda: {"recovered": [], "exhausted": []})()
+    app_repo = app_store.get_app_repository()
+
+    for job_id in recovery.get("recovered", []):
+        meta = app_repo.load_job_meta(job_id)
+        if not meta or meta.get("status") in {"done", "cancelled"}:
+            continue
+        _update_meta(job_id, status="queued", stage="Worker interrupted; queued for automatic recovery")
+        report_event(
+            "index_job_recovered",
+            "An interrupted indexing job was returned to the durable queue",
+            severity="warning",
+            source="index_worker",
+            context={"job_id": job_id},
+        )
+
+    for job_id in recovery.get("exhausted", []):
+        meta = app_repo.load_job_meta(job_id)
+        if not meta or meta.get("status") in {"done", "cancelled"}:
+            continue
+        error = "Index worker was interrupted repeatedly and exhausted automatic recovery attempts"
+        _update_meta(job_id, status="failed", stage=f"Error: {error}", error=error)
+        if meta.get("doc_id"):
+            update_doc_status(meta["doc_id"], "failed")
+        report_event(
+            "index_job_recovery_exhausted",
+            error,
+            source="index_worker",
+            context={"job_id": job_id},
+        )
+
+    payload = queue_repo.pop_index_job(timeout_seconds)
     if not payload:
         return None
-    return run_queued_job(payload["job_id"])
+    result = run_queued_job(payload["job_id"])
+    getattr(queue_repo, "ack_index_job", lambda _payload: None)(payload)
+    return result

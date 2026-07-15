@@ -47,6 +47,12 @@ jobs:
           npm test
           npm --prefix frontend run typecheck
 
+      - name: Install desktop browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Desktop E2E and accessibility
+        run: npm run test:e2e
+
       - name: Backend unit tests
         run: backend/.venv/bin/python -m pytest backend/tests -q
 

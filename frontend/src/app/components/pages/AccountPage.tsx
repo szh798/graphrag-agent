@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { SignInButton } from '@clerk/react';
 import {
+  AlertTriangle,
   Building2,
   Download,
   Gauge,
@@ -193,6 +194,14 @@ function AccountDashboard({ apiReady }: { apiReady: boolean }) {
 
       {isAdmin && (
         <Card title="运维概览（最近 24 小时）" icon={<ShieldCheck size={17} />}>
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            {Object.entries(ops?.readiness?.checks ?? {}).map(([key, check]) => (
+              <div key={key} className="rounded-md p-3 flex items-start gap-2" style={{ background: 'var(--bg-s2)' }}>
+                <span className="inline-block w-2 h-2 rounded-full mt-1" style={{ background: check.ready ? 'var(--green)' : 'var(--yellow)', flexShrink: 0 }} />
+                <span style={{ color: 'var(--text-2)', fontSize: 12, lineHeight: 1.5 }}>{check.message}</span>
+              </div>
+            ))}
+          </div>
           <div className="grid grid-cols-4 gap-3 mb-4">
             {[
               ['事件', ops?.totals.total ?? 0],
@@ -229,7 +238,7 @@ function AccountDashboard({ apiReady }: { apiReady: boolean }) {
           <p style={{ color: 'var(--text-3)', fontSize: 12, lineHeight: 1.7, marginBottom: 14 }}>
             导出账户、当前租户数据、用量和审计记录。组织空间仅管理员可导出。
           </p>
-          <button type="button" onClick={() => void exportData()} className="px-3 py-2 rounded-md cursor-pointer" style={{ background: 'var(--blue)', color: '#fff', border: 0, fontSize: 12 }}>
+          <button type="button" onClick={() => void exportData()} className="px-3 py-2 rounded-md cursor-pointer" style={{ background: 'var(--blue)', color: 'var(--on-blue)', border: 0, fontSize: 12, fontWeight: 600 }}>
             生成 JSON 导出
           </button>
         </Card>
@@ -290,13 +299,22 @@ export function AccountPage() {
 
   return (
     <div className="page-shell p-6" style={{ maxWidth: 1180, margin: '0 auto' }}>
+      {auth.environment === 'development' && (
+        <div className="flex items-start gap-3 rounded-lg p-4 mb-4" style={{ background: 'rgba(210,153,34,0.1)', border: '1px solid rgba(210,153,34,0.35)' }}>
+          <AlertTriangle size={18} style={{ color: 'var(--yellow)', flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <div style={{ color: 'var(--yellow)', fontSize: 13, fontWeight: 600 }}>当前为测试登录环境</div>
+            <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 4, lineHeight: 1.6 }}>功能可以正常试用；面向正式用户发布前，需要由站点管理员切换到 Clerk Production 密钥。</div>
+          </div>
+        </div>
+      )}
       {!auth.signedIn && (
         <Card title="登录后使用账户与组织功能" icon={<ShieldCheck size={17} />}>
           <p style={{ color: 'var(--text-3)', fontSize: 13, lineHeight: 1.7, marginBottom: 16 }}>
-            登录后可跨设备使用个人或组织空间，并查看按账户统计的模型用量、导出和删除站内数据。
+            登录后可跨设备使用个人或组织空间，并查看按账户统计的模型用量、导出和删除站内数据。当前浏览器里的匿名文档会在首次登录时自动迁移到你的个人或组织空间；其他设备上的匿名内容不会自动合并。
           </p>
           <SignInButton mode="modal">
-            <button type="button" className="px-4 py-2 rounded-md cursor-pointer" style={{ background: 'var(--blue)', color: '#fff', border: 0, fontSize: 13, fontWeight: 600 }}>
+            <button type="button" className="px-4 py-2 rounded-md cursor-pointer" style={{ background: 'var(--blue)', color: 'var(--on-blue)', border: 0, fontSize: 13, fontWeight: 600 }}>
               登录或注册
             </button>
           </SignInButton>

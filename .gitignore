@@ -27,6 +27,8 @@ backend/output/
 .demo-runtime/
 .playwright-cli/
 .webwright/
+test-results/
+playwright-report/
 *.log
 *.sqlite
 *.sqlite3

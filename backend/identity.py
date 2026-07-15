@@ -97,6 +97,26 @@ def clerk_jwks_url() -> str:
     return f"{issuer}/.well-known/jwks.json" if issuer else ""
 
 
+def clerk_configuration_profile() -> dict[str, Any]:
+    """Return a secret-free deployment readiness profile for Clerk."""
+    raw = os.getenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", os.getenv("CLERK_PUBLISHABLE_KEY", "")).strip().strip("\"'")
+    if raw.startswith("pk_live_"):
+        mode = "production"
+    elif raw.startswith("pk_test_"):
+        mode = "development"
+    else:
+        mode = "disabled"
+    issuer_configured = bool(clerk_issuer())
+    jwks_configured = bool(clerk_jwks_url())
+    return {
+        "configured": mode != "disabled" and issuer_configured and jwks_configured,
+        "mode": mode,
+        "issuer_configured": issuer_configured,
+        "jwks_configured": jwks_configured,
+        "production_ready": mode == "production" and issuer_configured and jwks_configured,
+    }
+
+
 def _authorized_parties() -> set[str]:
     raw = os.getenv(
         "CLERK_AUTHORIZED_PARTIES",

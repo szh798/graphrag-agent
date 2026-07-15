@@ -2,6 +2,7 @@ import React from 'react';
 import { useNavigate } from 'react-router';
 import { Share2, MessageSquare, Search, Zap, FileText, ExternalLink, UploadCloud } from 'lucide-react';
 import { useAppState } from '../../store';
+import { documentStatusLabel } from '../../document-status';
 
 const statCards = [
   { key: 'kg_nodes', label: '图谱节点', color: '#58a6ff', icon: '◈' },
@@ -63,16 +64,16 @@ export function Dashboard() {
           <h2 className="mb-4" style={{ color: 'var(--text-1)', fontSize: 16, fontWeight: 600 }}>系统健康</h2>
           <div className="flex flex-col gap-3">
             {[
-              { name: 'MinerU venv', status: health.mineru },
-              { name: 'LangExtract venv', status: health.langextract },
-              { name: 'LLM API', status: health.deepseek },
-              { name: 'Blob Storage', status: health.storage },
+              { name: '文档解析', status: health.mineru },
+              { name: '实体提取', status: health.langextract },
+              { name: '问答与索引', status: health.deepseek },
+              { name: '文件存储', status: health.storage },
             ].map(s => (
               <div key={s.name} className="flex items-center justify-between">
                 <span style={{ color: 'var(--text-2)', fontSize: 13 }}>{s.name}</span>
                 <span className="flex items-center gap-1.5">
                   <span className="inline-block w-2 h-2 rounded-full" style={{ background: s.status === 'ok' ? 'var(--green)' : 'var(--red)' }} />
-                  <span style={{ color: s.status === 'ok' ? 'var(--green)' : 'var(--red)', fontSize: 12 }}>{s.status}</span>
+                  <span style={{ color: s.status === 'ok' ? 'var(--green)' : 'var(--red)', fontSize: 12 }}>{s.status === 'ok' ? '可用' : '异常'}</span>
                 </span>
               </div>
             ))}
@@ -158,7 +159,7 @@ export function Dashboard() {
                       className="px-2 py-0.5 rounded-full"
                       style={{ fontSize: 11, fontWeight: 600, background: st.bg, color: st.color }}
                     >
-                      {doc.status}
+                      {documentStatusLabel[doc.status]}
                     </span>
                   </span>
                   <span style={{ color: 'var(--text-4)', fontSize: 12 }}>

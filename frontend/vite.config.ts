@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import path from 'path'
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import hostingConfig from './.openai/hosting.json'
@@ -37,6 +38,8 @@ const localBindingConfig = {
 }
 
 export default defineConfig(async () => {
+  const rootPackage = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version?: string }
+  process.env.VITE_APP_VERSION ??= rootPackage.version ?? '1.1.0'
   // Vercel's Clerk integration exposes the framework-neutral public key under
   // NEXT_PUBLIC_*. Mirror it into Vite's public build namespace. Sites may
   // still provide VITE_CLERK_PUBLISHABLE_KEY directly for its static shell.

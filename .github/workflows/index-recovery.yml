@@ -1,0 +1,30 @@
+name: Index Queue Recovery
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: index-queue-recovery
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Wake one indexing worker
+        env:
+          INDEX_DISPATCH_SECRET: ${{ secrets.INDEX_DISPATCH_SECRET }}
+          INDEX_DISPATCH_URL: https://graphrag-agent.vercel.app/api/index-dispatch
+        run: |
+          test -n "$INDEX_DISPATCH_SECRET"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $INDEX_DISPATCH_SECRET" \
+            --header "X-Request-ID: gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$INDEX_DISPATCH_URL"

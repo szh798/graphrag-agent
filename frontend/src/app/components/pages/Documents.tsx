@@ -6,6 +6,7 @@ import { useAppState, type Document } from '../../store';
 import { api, ApiError, type ApiDocumentExtractions, type ApiIndexResult } from '../../api';
 import { useAuthRuntime } from '../../auth';
 import { uploadDocumentDirect } from '../../direct-upload';
+import { documentStatusLabel } from '../../document-status';
 
 const statusStyles: Record<string, { bg: string; color: string }> = {
   indexed:  { bg: '#1a3a22', color: '#3fb950' },
@@ -169,17 +170,18 @@ export function Documents() {
           disabled={uploading || identityPending}
           onClick={() => fileInputRef.current?.click()}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer"
-          style={{ background: 'var(--blue)', border: 0, color: '#fff', fontSize: 13, opacity: uploading || identityPending ? 0.7 : 1 }}
+          style={{ background: 'var(--blue)', border: 0, color: 'var(--on-blue)', fontSize: 13, fontWeight: 600, opacity: uploading || identityPending ? 0.7 : 1 }}
         >
           <UploadCloud size={14} /> {identityPending ? '正在同步登录' : uploading ? `上传中 ${uploadProgress}%` : '上传文档'}
         </button>
         <select
+          aria-label="按文档格式筛选"
           value={formatFilter}
           onChange={e => setFormatFilter(e.target.value)}
           className="px-3 py-1.5 rounded-md cursor-pointer"
           style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 13 }}
         >
-          <option>All</option>
+          <option value="All">全部格式</option>
           <option>PDF</option>
           <option>DOCX</option>
           <option>PPTX</option>
@@ -188,18 +190,20 @@ export function Documents() {
           <option>HTML</option>
         </select>
         <select
+          aria-label="按索引状态筛选"
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value)}
           className="px-3 py-1.5 rounded-md cursor-pointer"
           style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 13 }}
         >
-          <option>All</option>
-          <option>indexed</option>
-          <option>indexing</option>
-          <option>uploaded</option>
-          <option>failed</option>
+          <option value="All">全部状态</option>
+          <option value="indexed">已索引</option>
+          <option value="indexing">索引中</option>
+          <option value="uploaded">已上传</option>
+          <option value="failed">失败</option>
         </select>
         <input
+          aria-label="搜索文档"
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
           placeholder="搜索文档..."
@@ -233,7 +237,7 @@ export function Documents() {
           <div className="flex flex-col items-center justify-center py-12 gap-3">
             <FileText size={40} style={{ color: 'var(--text-4)' }} />
             <span style={{ color: 'var(--text-3)', fontSize: 14 }}>
-              {documents.length === 0 ? '公开演示暂无文档' : '未找到匹配文档'}
+              {documents.length === 0 ? '当前空间暂无文档' : '未找到匹配文档'}
             </span>
           </div>
         ) : (
@@ -251,6 +255,9 @@ export function Documents() {
                   }}
                 >
 	                  <button
+	                    type="button"
+	                    aria-label={doc.status === 'indexed' ? `${isExpanded ? '收起' : '展开'} ${doc.filename} 的索引结果` : undefined}
+	                    disabled={doc.status !== 'indexed'}
 	                    onClick={() => handleToggleExpanded(doc)}
 	                    className="cursor-pointer"
 	                    style={{ background: 'none', border: 'none', color: 'var(--text-4)', padding: 0 }}
@@ -270,7 +277,7 @@ export function Documents() {
                       {doc.status === 'indexing' && (
                         <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: st.color }} />
                       )}
-                      {doc.status}
+                      {documentStatusLabel[doc.status]}
                     </span>
                   </span>
                   <span style={{ color: 'var(--text-4)', fontSize: 12 }}>

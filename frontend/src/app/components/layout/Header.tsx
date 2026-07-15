@@ -18,7 +18,7 @@ function AccountControls() {
           <button
             type="button"
             className="px-3 py-1.5 rounded-md cursor-pointer"
-            style={{ color: 'var(--text-1)', background: 'var(--blue)', border: 0, fontSize: 12, fontWeight: 600 }}
+            style={{ color: 'var(--on-blue)', background: 'var(--blue)', border: 0, fontSize: 12, fontWeight: 600 }}
           >
             登录
           </button>
@@ -110,7 +110,7 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
           whiteSpace: 'nowrap',
         }}
       >
-        公开演示 · 文档只读
+        公开演示 · 可上传并索引
       </span>
 
       {/* Center - Search */}
@@ -133,7 +133,7 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
             }}
           />
           {query && (
-            <button type="button" onClick={() => { setQuery(''); setShowSuggestions(false); }} className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer" style={{ color: 'var(--text-4)' }}>
+            <button type="button" aria-label="清空搜索" onClick={() => { setQuery(''); setShowSuggestions(false); }} className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer" style={{ color: 'var(--text-4)' }}>
               <X size={14} />
             </button>
           )}

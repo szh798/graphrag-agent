@@ -8,12 +8,46 @@ from typing import Any
 
 import requests
 
-from identity import RequestIdentity
+from identity import RequestIdentity, clerk_configuration_profile
 from observability import get_request_id
 from storage.account_repository import get_account_repository
 
 
 logger = logging.getLogger("graphrag.operations")
+
+
+def operational_readiness() -> dict[str, Any]:
+    """Describe production controls without exposing any secret values."""
+    auth = clerk_configuration_profile()
+    try:
+        retention_hours = max(0, int(os.getenv("DATABASE_BACKUP_RETENTION_HOURS", "0") or 0))
+    except ValueError:
+        retention_hours = 0
+    pitr_ready = os.getenv("DATABASE_PITR_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"} and retention_hours > 0
+    checks = {
+        "authentication": {
+            "ready": bool(auth["production_ready"]),
+            "mode": auth["mode"],
+            "message": "正式身份服务已启用" if auth["production_ready"] else "仍在使用测试身份服务，请切换 Clerk Production 密钥",
+        },
+        "alert_delivery": {
+            "ready": bool(os.getenv("OPS_ALERT_WEBHOOK_URL", "").strip()),
+            "message": "异常告警 webhook 已配置" if os.getenv("OPS_ALERT_WEBHOOK_URL", "").strip() else "异常会记录到运维面板，但尚未配置外部告警 webhook",
+        },
+        "database_recovery": {
+            "ready": pitr_ready,
+            "retention_hours": retention_hours,
+            "message": "数据库恢复窗口已登记" if pitr_ready else "尚未登记云数据库的时间点恢复窗口",
+        },
+        "index_recovery": {
+            "ready": bool(os.getenv("INDEX_DISPATCH_SECRET", "").strip()),
+            "message": "索引队列定时恢复已配置" if os.getenv("INDEX_DISPATCH_SECRET", "").strip() else "索引队列租约已启用，但定时唤醒密钥尚未配置",
+        },
+    }
+    return {
+        "status": "ready" if all(check["ready"] for check in checks.values()) else "action_required",
+        "checks": checks,
+    }
 
 
 def report_event(
@@ -42,7 +76,8 @@ def report_event(
         "message": " ".join(str(message).split())[:500],
         "context": safe_context,
     }
-    logger.error(json.dumps(log_payload, ensure_ascii=False, separators=(",", ":")))
+    log_method = logger.warning if severity == "warning" else logger.error
+    log_method(json.dumps(log_payload, ensure_ascii=False, separators=(",", ":")))
 
     event_id: str | None = None
     try:

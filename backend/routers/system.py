@@ -17,6 +17,7 @@ from storage import blob_repository as blob_store
 from storage import file_store as fs
 from storage import graph_repository as graph_store
 from storage import queue_repository as queue_store
+from version import APP_VERSION
 
 router = APIRouter(tags=["System"])
 
@@ -127,6 +128,7 @@ def _health_payload() -> dict:
     parser_mode = _normalized_parser_mode()
     active_parser = "mineru" if parser_mode == "mineru" or (parser_mode == "auto" and mineru_token) else "local"
     parser_status = "error" if parser_mode == "mineru" and not mineru_token else "ok"
+    mineru_status = "ok" if mineru_token or active_parser == "local" else "error"
 
     graph_repo = graph_store.get_graph_repository()
     app_repo = app_store.get_app_repository()
@@ -150,14 +152,15 @@ def _health_payload() -> dict:
             "local_supported_formats": sorted(SUPPORTED_LOCAL_EXTENSIONS),
         },
         "mineru_venv": {
-            "status": "ok" if mineru_token else "error",
-            "path": "cloud",
+            "status": mineru_status,
+            "mode": "cloud" if mineru_token else "disabled",
             "exists": bool(mineru_token),
             "base_url": mineru_base_url,
             "key_configured": bool(mineru_token),
         },
         "mineru_api": {
-            "status": "ok" if mineru_token else "error",
+            "status": mineru_status,
+            "mode": "cloud" if mineru_token else "disabled",
             "base_url": mineru_base_url,
             "key_configured": bool(mineru_token),
             "model": mineru_model,
@@ -211,7 +214,7 @@ def _health_payload() -> dict:
 
     return {
         "status": overall,
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "uptime_seconds": round(time.time() - _START_TIME, 1),
         "components": components,
         "production_ready": not production_issues and overall == "healthy",
@@ -227,7 +230,7 @@ async def health_check():
 async def live_check():
     return APIResponse.ok({
         "status": "live",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "uptime_seconds": round(time.time() - _START_TIME, 1),
     })
 

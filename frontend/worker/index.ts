@@ -310,7 +310,7 @@ async function serveSite(request: Request, env: Env): Promise<Response> {
   const origin = new URL(request.url).origin
   const html = (await response.text())
     .replaceAll(SITE_ORIGIN_PLACEHOLDER, origin)
-    .replaceAll('%VITE_CLERK_PUBLISHABLE_KEY%', env.CLERK_PUBLISHABLE_KEY ?? '')
+    .replaceAll('__CLERK_PUBLISHABLE_KEY__', env.CLERK_PUBLISHABLE_KEY ?? '')
   const headers = new Headers(response.headers)
   headers.delete('content-length')
 

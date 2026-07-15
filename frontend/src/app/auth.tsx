@@ -8,6 +8,7 @@ interface AuthRuntimeState {
   signedIn: boolean;
   apiReady: boolean;
   identityKey: string;
+  environment: 'disabled' | 'development' | 'production';
 }
 
 const anonymousState: AuthRuntimeState = {
@@ -16,6 +17,7 @@ const anonymousState: AuthRuntimeState = {
   signedIn: false,
   apiReady: true,
   identityKey: 'anonymous',
+  environment: 'disabled',
 };
 
 const AuthRuntimeContext = createContext<AuthRuntimeState>(anonymousState);
@@ -25,7 +27,7 @@ function runtimePublishableKey(): string {
   return (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || meta?.content || '').trim();
 }
 
-function ClerkRuntimeBridge({ children }: { children: ReactNode }) {
+function ClerkRuntimeBridge({ children, environment }: { children: ReactNode; environment: 'development' | 'production' }) {
   const { getToken, isLoaded, isSignedIn, orgId, userId } = useAuth();
   const identityKey = !isLoaded
     ? 'loading'
@@ -63,7 +65,8 @@ function ClerkRuntimeBridge({ children }: { children: ReactNode }) {
     signedIn: Boolean(isSignedIn),
     apiReady: isLoaded && preparedIdentityKey === identityKey,
     identityKey,
-  }), [identityKey, isLoaded, isSignedIn, preparedIdentityKey]);
+    environment,
+  }), [environment, identityKey, isLoaded, isSignedIn, preparedIdentityKey]);
 
   return <AuthRuntimeContext.Provider value={value}>{children}</AuthRuntimeContext.Provider>;
 }
@@ -74,14 +77,15 @@ export function AppAuthProvider({ children }: { children: ReactNode }) {
     !publishableKey ||
     publishableKey === 'undefined' ||
     publishableKey === 'null' ||
-    publishableKey.startsWith('%VITE_')
+    publishableKey.startsWith('%VITE_') ||
+    publishableKey.startsWith('__CLERK_')
   ) {
     return <AuthRuntimeContext.Provider value={anonymousState}>{children}</AuthRuntimeContext.Provider>;
   }
 
   return (
     <ClerkProvider publishableKey={publishableKey}>
-      <ClerkRuntimeBridge>{children}</ClerkRuntimeBridge>
+      <ClerkRuntimeBridge environment={publishableKey.startsWith('pk_live_') ? 'production' : 'development'}>{children}</ClerkRuntimeBridge>
     </ClerkProvider>
   );
 }

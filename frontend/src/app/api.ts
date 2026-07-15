@@ -298,6 +298,10 @@ export interface ApiOpsSummary {
     occurrences: number;
     last_seen: string;
   }>;
+  readiness?: {
+    status: 'ready' | 'action_required';
+    checks: Record<string, { ready: boolean; message: string; mode?: string; retention_hours?: number }>;
+  };
 }
 
 export interface ApiToolCall {

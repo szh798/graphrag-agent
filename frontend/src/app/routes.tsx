@@ -1,12 +1,5 @@
 import { createBrowserRouter, Navigate } from 'react-router';
 import { AppLayout } from './components/layout/AppLayout';
-import { Dashboard } from './components/pages/Dashboard';
-import { Documents } from './components/pages/Documents';
-import { KGExplorer } from './components/pages/KGExplorer';
-import { QAChat } from './components/pages/QAChat';
-import { SearchPage } from './components/pages/SearchPage';
-import { SettingsPage } from './components/pages/SettingsPage';
-import { AccountPage } from './components/pages/AccountPage';
 
 export const router = createBrowserRouter([
   {
@@ -14,13 +7,13 @@ export const router = createBrowserRouter([
     Component: AppLayout,
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
-      { path: 'dashboard', Component: Dashboard },
-      { path: 'documents', Component: Documents },
-      { path: 'graph', Component: KGExplorer },
-      { path: 'chat', Component: QAChat },
-      { path: 'search', Component: SearchPage },
-      { path: 'settings', Component: SettingsPage },
-      { path: 'account', Component: AccountPage },
+      { path: 'dashboard', lazy: async () => ({ Component: (await import('./components/pages/Dashboard')).Dashboard }) },
+      { path: 'documents', lazy: async () => ({ Component: (await import('./components/pages/Documents')).Documents }) },
+      { path: 'graph', lazy: async () => ({ Component: (await import('./components/pages/KGExplorer')).KGExplorer }) },
+      { path: 'chat', lazy: async () => ({ Component: (await import('./components/pages/QAChat')).QAChat }) },
+      { path: 'search', lazy: async () => ({ Component: (await import('./components/pages/SearchPage')).SearchPage }) },
+      { path: 'settings', lazy: async () => ({ Component: (await import('./components/pages/SettingsPage')).SettingsPage }) },
+      { path: 'account', lazy: async () => ({ Component: (await import('./components/pages/AccountPage')).AccountPage }) },
     ],
   },
 ]);

@@ -27,7 +27,7 @@ export function StatusBar() {
       </div>
       <div className="flex items-center gap-3">
         <span>公开演示 · 上传与索引已开放</span>
-        <span>v1.0.0</span>
+        <span>v{import.meta.env.VITE_APP_VERSION || '1.1.0'}</span>
         <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: allOk ? 'var(--green)' : 'var(--red)' }} />
       </div>
     </footer>

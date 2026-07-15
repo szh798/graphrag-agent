@@ -21,6 +21,7 @@ from models.schemas import APIResponse
 from observability import RequestContextMiddleware
 from operations import report_exception
 from security import ProxyAuthMiddleware
+from version import APP_VERSION
 
 
 _LOCAL_ORIGINS = (
@@ -56,7 +57,7 @@ _ALLOWED_ORIGINS, _ALLOW_CREDENTIALS = _cors_settings()
 app = FastAPI(
     title="GraphRAG Studio API",
     description="Multimodal RAG Q&A system backend — MinerU + LangExtract + Agentic-RAG",
-    version="1.0.0",
+    version=APP_VERSION,
     docs_url=None if _PRODUCTION else "/docs",
     redoc_url=None if _PRODUCTION else "/redoc",
     openapi_url=None if _PRODUCTION else "/openapi.json",
@@ -108,7 +109,7 @@ app.include_router(account.router,   prefix=PREFIX)
 
 @app.get("/")
 async def root():
-    data = {"msg": "GraphRAG Studio API v1.0.0", "health": "/api/v1/health/live"}
+    data = {"msg": f"GraphRAG Studio API v{APP_VERSION}", "health": "/api/v1/health/live"}
     if not _PRODUCTION:
         data["docs"] = "/docs"
     return data

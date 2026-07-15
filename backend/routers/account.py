@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from identity import RequestIdentity, require_admin, require_authenticated_identity
 from models.schemas import APIResponse
 from observability import get_request_id
+from operations import operational_readiness
 from storage import blob_repository as blob_store
 from storage import graph_repository as graph_store
 from storage.account_repository import get_account_repository
@@ -156,4 +157,6 @@ async def operations_summary(
 ):
     require_admin(identity)
     _sync(identity)
-    return APIResponse.ok(get_account_repository().ops_summary(hours))
+    summary = get_account_repository().ops_summary(hours)
+    summary["readiness"] = operational_readiness()
+    return APIResponse.ok(summary)
