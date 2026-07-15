@@ -62,6 +62,14 @@ def _should_use_mineru() -> bool:
     return bool(os.getenv("MINERU_API_TOKEN", "").strip())
 
 
+def _should_use_mineru_for_document(doc: dict) -> bool:
+    filename_extension = Path(str(doc.get("filename") or "")).suffix.lower().lstrip(".")
+    extension = str(doc.get("format") or filename_extension).strip().lower().lstrip(".")
+    if extension in {"html", "htm", "txt", "md", "markdown"}:
+        return False
+    return _should_use_mineru()
+
+
 def _should_embed_graph() -> bool:
     mode = os.getenv("GRAPHRAG_ENABLE_EMBEDDINGS", "auto").strip().lower()
     if mode in {"1", "true", "yes", "on"}:
@@ -210,7 +218,8 @@ def _run_pipeline(job_id: str) -> None:
             _update_meta(job_id, status="cancelled", stage="Cancelled")
             return
 
-        parser_label = "MinerU document parsing" if _should_use_mineru() else "Local document parsing"
+        use_mineru = _should_use_mineru_for_document(doc)
+        parser_label = "MinerU document parsing" if use_mineru else "Local document parsing"
         _update_meta(job_id, status="parsing", stage=f"{parser_label}...")
         mineru_out_dir = job_dir / "mineru_output"
         mineru_out_dir.mkdir(parents=True, exist_ok=True)
@@ -228,7 +237,7 @@ def _run_pipeline(job_id: str) -> None:
                 },
             )
 
-        if _should_use_mineru():
+        if use_mineru:
             client = MinerUCloudClient()
             content_list_path = client.parse_local_file(
                 pdf_path,

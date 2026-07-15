@@ -88,6 +88,17 @@ def _run_pipeline_with_doc(env: dict[str, str]):
 
 
 class IndexingServiceLocalParserTests(unittest.TestCase):
+    def test_text_formats_use_local_parser_even_when_mineru_is_configured(self):
+        from services import indexing_service as idx
+
+        with patch.dict("os.environ", {"PARSER_MODE": "auto", "MINERU_API_TOKEN": "token"}, clear=False):
+            for extension in ("html", "txt", "md", "markdown"):
+                with self.subTest(extension=extension):
+                    self.assertFalse(idx._should_use_mineru_for_document({
+                        "filename": f"notes.{extension}",
+                        "format": extension,
+                    }))
+
     def test_forced_local_parser_mode_indexes_without_mineru(self):
         saved_meta, calls = _run_pipeline_with_doc({
             "PARSER_MODE": "local",
