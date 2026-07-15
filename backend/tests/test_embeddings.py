@@ -30,6 +30,7 @@ class EmbeddingTests(unittest.TestCase):
 
         with (
             patch.object(embeddings.requests, "post", side_effect=fake_post),
+            patch.object(embeddings, "require_llm_api_key", return_value=None),
             patch.object(embeddings, "LLM_API_KEY", "secret"),
             patch.object(embeddings, "LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
             patch.object(embeddings, "LLM_EMBEDDING_MODEL", "embedding-3"),

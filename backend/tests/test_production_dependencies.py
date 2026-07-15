@@ -58,6 +58,12 @@ class ProductionDependencyTests(unittest.TestCase):
         system = importlib.import_module("routers.system")
 
         with (
+            patch.dict("os.environ", {
+                "MINERU_API_TOKEN": "test-token",
+                "PARSER_MODE": "auto",
+            }, clear=False),
+            patch.object(system, "LLM_API_KEY", "test-key"),
+            patch.object(system, "_check_python_import", return_value={"status": "ok", "exists": True}),
             patch.object(system.graph_store.get_graph_repository(), "health", return_value={"status": "ok", "backend": "neo4j"}),
             patch.object(system.app_store.get_app_repository(), "health", return_value={"status": "ok", "backend": "postgres"}),
             patch.object(system.blob_store.get_blob_repository(), "health", return_value={"status": "ok", "backend": "vercel_blob"}),

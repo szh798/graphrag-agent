@@ -82,7 +82,15 @@ class SystemHealthTests(unittest.TestCase):
             def health(self):
                 return {"status": "ok", "backend": "neo4j"}
 
-        with patch.object(system.graph_store, "get_graph_repository", return_value=StubRepo()):
+        with (
+            patch.dict("os.environ", {
+                "MINERU_API_TOKEN": "test-token",
+                "PARSER_MODE": "auto",
+            }, clear=False),
+            patch.object(system, "LLM_API_KEY", "test-key"),
+            patch.object(system, "_check_python_import", return_value={"status": "ok", "exists": True}),
+            patch.object(system.graph_store, "get_graph_repository", return_value=StubRepo()),
+        ):
             live = asyncio.run(system.live_check())
             ready = asyncio.run(system.ready_check())
 
