@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install frontend dependencies
+        run: npm ci && npm --prefix frontend ci --legacy-peer-deps
+
+      - name: Install backend dependencies
+        run: |
+          uv venv backend/.venv
+          uv pip install --python backend/.venv/bin/python -r backend/requirements.txt "pytest>=8.0"
+
+      - name: Frontend tests and typecheck
+        run: |
+          npm test
+          npm --prefix frontend run typecheck
+
+      - name: Backend unit tests
+        run: backend/.venv/bin/python -m pytest backend/tests -q
+
+      - name: Production build
+        run: npm run build
+
+      - name: Dependency audit
+        run: npm audit --omit=dev && npm --prefix frontend audit --omit=dev
