@@ -39,6 +39,16 @@ async def account_me(identity: RequestIdentity = Depends(require_authenticated_i
     return APIResponse.ok(identity.public_dict())
 
 
+@router.post("/account/claim-visitor-data")
+async def claim_visitor_data(identity: RequestIdentity = Depends(require_authenticated_identity)):
+    repo = get_account_repository()
+    repo.sync_identity(identity)
+    result = repo.claim_visitor_data(identity)
+    if any(result["claimed"].values()):
+        repo.record_audit(identity, "account.visitor_data_claimed", get_request_id(), result["claimed"])
+    return APIResponse.ok(result)
+
+
 @router.get("/account/usage")
 async def account_usage(
     days: int = Query(default=30, ge=1, le=366),

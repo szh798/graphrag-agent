@@ -15,7 +15,7 @@ export function setAuthTokenProvider(provider: AuthTokenProvider | null) {
   authTokenProvider = provider;
 }
 
-async function authorizationHeader(): Promise<Record<string, string>> {
+export async function getAuthorizationHeaders(): Promise<Record<string, string>> {
   const token = await authTokenProvider?.();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
@@ -55,7 +55,7 @@ async function request<T>(
     if (parts.length) url += '?' + parts.join('&');
   }
 
-  const init: RequestInit = { method, headers: await authorizationHeader() };
+  const init: RequestInit = { method, headers: await getAuthorizationHeaders() };
   if (options.formData) {
     init.body = options.formData;
   } else if (options.body !== undefined) {
@@ -524,7 +524,7 @@ export const api = {
   ) => {
     const res = await fetch(`${BASE}/query/stream`, {
       method: 'POST',
-      headers: { ...(await authorizationHeader()), 'Content-Type': 'application/json' },
+      headers: { ...(await getAuthorizationHeaders()), 'Content-Type': 'application/json' },
       body: JSON.stringify({ question, history: toChatHistory(history), session_id: sessionId ?? undefined }),
     });
 
@@ -593,6 +593,9 @@ export const api = {
     del<{ batch_id: string; previous_status: string; status: string; cancel_requested: boolean }>(`/query/batch/${batchId}`),
 
   // E: Account, tenant, usage and operations
+  claimVisitorData: () =>
+    post<{ claimed: Record<string, number>; tenant_id: string }>('/account/claim-visitor-data'),
+
   getAccountMe: () => get<ApiAccountIdentity>('/account/me'),
 
   getAccountUsage: (days = 30, tenantTotal = false) =>

@@ -59,6 +59,10 @@ export function classifyApiRequest(method, rawPathname) {
   const normalizedMethod = method.toUpperCase()
   const pathname = normalizedPath(rawPathname)
 
+  if (normalizedMethod === 'POST' && pathname === '/api/v1/account/claim-visitor-data') {
+    return { action: 'allow' }
+  }
+
   if (normalizedMethod === 'POST' && pathname === '/api/v1/documents/upload/direct') {
     return { action: 'allow' }
   }

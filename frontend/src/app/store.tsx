@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import { api, type ApiDoc, type ApiKGNode, type ApiKGEdge, type ApiChatSessionSummary, type ApiIndexResult, ApiError } from './api';
+import { useAuthRuntime } from './auth';
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
 
@@ -218,6 +219,7 @@ const KG_EDGES_PAGE_SIZE = 500;
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const auth = useAuthRuntime();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [nodes, setNodes] = useState<KGNode[]>([]);
   const [edges, setEdges] = useState<KGEdge[]>([]);
@@ -349,12 +351,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ── Initial load ──────────────────────────────────────────────────────────
 
   useEffect(() => {
-    refreshKG();
-    refreshDocuments();
-    refreshHistory();
-    refreshSessions();
-    refreshHealthStats();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setKgLoading(true);
+    setDocsLoading(true);
+    setNodes([]);
+    setEdges([]);
+    setDocuments([]);
+    setMessages([]);
+    setChatHistory([]);
+    setChatSessions([]);
+    setSelectedNode(null);
+
+    if (!auth.apiReady) return;
+
+    void Promise.all([
+      refreshKG(),
+      refreshDocuments(),
+      refreshHistory(),
+      refreshSessions(),
+      refreshHealthStats(),
+    ]);
+  }, [
+    auth.apiReady,
+    auth.identityKey,
+    refreshDocuments,
+    refreshHealthStats,
+    refreshHistory,
+    refreshKG,
+    refreshSessions,
+  ]);
 
   // ── Revalidate health/stats without keeping background tabs hot ───────────
 

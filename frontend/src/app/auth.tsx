@@ -1,12 +1,13 @@
 import { ClerkProvider, useAuth } from '@clerk/react';
 import React, { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { setAuthTokenProvider } from './api';
+import { api, setAuthTokenProvider } from './api';
 
 interface AuthRuntimeState {
   enabled: boolean;
   loaded: boolean;
   signedIn: boolean;
   apiReady: boolean;
+  identityKey: string;
 }
 
 const anonymousState: AuthRuntimeState = {
@@ -14,6 +15,7 @@ const anonymousState: AuthRuntimeState = {
   loaded: true,
   signedIn: false,
   apiReady: true,
+  identityKey: 'anonymous',
 };
 
 const AuthRuntimeContext = createContext<AuthRuntimeState>(anonymousState);
@@ -24,25 +26,44 @@ function runtimePublishableKey(): string {
 }
 
 function ClerkRuntimeBridge({ children }: { children: ReactNode }) {
-  const { getToken, isLoaded, isSignedIn } = useAuth();
-  const [apiReady, setApiReady] = useState(false);
+  const { getToken, isLoaded, isSignedIn, orgId, userId } = useAuth();
+  const identityKey = !isLoaded
+    ? 'loading'
+    : isSignedIn
+      ? `account:${userId}:${orgId ?? 'personal'}`
+      : 'anonymous';
+  const [preparedIdentityKey, setPreparedIdentityKey] = useState('');
 
   useEffect(() => {
     if (!isLoaded) return;
+    let cancelled = false;
     setAuthTokenProvider(isSignedIn ? () => getToken() : null);
-    setApiReady(true);
-    return () => {
-      setAuthTokenProvider(null);
-      setApiReady(false);
+
+    const prepareIdentity = async () => {
+      if (isSignedIn) {
+        try {
+          await api.claimVisitorData();
+        } catch (error) {
+          console.warn('Visitor data claim failed:', error);
+        }
+      }
+      if (!cancelled) setPreparedIdentityKey(identityKey);
     };
-  }, [getToken, isLoaded, isSignedIn]);
+    void prepareIdentity();
+
+    return () => {
+      cancelled = true;
+      setAuthTokenProvider(null);
+    };
+  }, [getToken, identityKey, isLoaded, isSignedIn]);
 
   const value = useMemo<AuthRuntimeState>(() => ({
     enabled: true,
     loaded: isLoaded,
     signedIn: Boolean(isSignedIn),
-    apiReady,
-  }), [apiReady, isLoaded, isSignedIn]);
+    apiReady: isLoaded && preparedIdentityKey === identityKey,
+    identityKey,
+  }), [identityKey, isLoaded, isSignedIn, preparedIdentityKey]);
 
   return <AuthRuntimeContext.Provider value={value}>{children}</AuthRuntimeContext.Provider>;
 }

@@ -32,6 +32,7 @@ test('public demo allowlist keeps read surfaces, QA, sessions, and every batch r
     ['GET', '/api/v1/account/export'],
     ['DELETE', '/api/v1/account/data'],
     ['DELETE', '/api/v1/account/tenant-data'],
+    ['POST', '/api/v1/account/claim-visitor-data'],
     ['GET', '/api/v1/ops/summary'],
   ]
 

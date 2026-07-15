@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { FileText, UploadCloud, X, ChevronDown, ChevronRight, Eye, Play, Square } from 'lucide-react';
 import { useAppState, type Document } from '../../store';
 import { api, ApiError, type ApiDocumentExtractions, type ApiIndexResult } from '../../api';
+import { useAuthRuntime } from '../../auth';
 import { uploadDocumentDirect } from '../../direct-upload';
 
 const statusStyles: Record<string, { bg: string; color: string }> = {
@@ -15,6 +16,8 @@ const statusStyles: Record<string, { bg: string; color: string }> = {
 
 export function Documents() {
   const { documents, setDocuments, refreshDocuments } = useAppState();
+  const auth = useAuthRuntime();
+  const identityPending = auth.enabled && !auth.apiReady;
   const navigate = useNavigate();
   const [formatFilter, setFormatFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -82,6 +85,10 @@ export function Documents() {
   }, []);
 
   const handleUpload = useCallback(async (file: File) => {
+    if (identityPending) {
+      toast.error('登录状态正在同步，请稍后重试');
+      return;
+    }
     setUploading(true);
     setUploadProgress(0);
     try {
@@ -100,7 +107,7 @@ export function Documents() {
       setUploadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  }, [refreshDocuments]);
+  }, [identityPending, refreshDocuments]);
 
   const handleStartIndex = useCallback(async (doc: Document) => {
     try {
@@ -149,6 +156,7 @@ export function Documents() {
         <input
           ref={fileInputRef}
           type="file"
+          disabled={uploading || identityPending}
           className="hidden"
           accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.html,.txt,.md,.markdown"
           onChange={event => {
@@ -158,12 +166,12 @@ export function Documents() {
         />
         <button
           type="button"
-          disabled={uploading}
+          disabled={uploading || identityPending}
           onClick={() => fileInputRef.current?.click()}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer"
-          style={{ background: 'var(--blue)', border: 0, color: '#fff', fontSize: 13, opacity: uploading ? 0.7 : 1 }}
+          style={{ background: 'var(--blue)', border: 0, color: '#fff', fontSize: 13, opacity: uploading || identityPending ? 0.7 : 1 }}
         >
-          <UploadCloud size={14} /> {uploading ? `上传中 ${uploadProgress}%` : '上传文档'}
+          <UploadCloud size={14} /> {identityPending ? '正在同步登录' : uploading ? `上传中 ${uploadProgress}%` : '上传文档'}
         </button>
         <select
           value={formatFilter}

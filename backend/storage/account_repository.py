@@ -175,6 +175,66 @@ class PostgresAccountRepository:
                 )
             conn.commit()
 
+    def claim_visitor_data(self, identity: RequestIdentity) -> dict:
+        """Move this browser's anonymous records into the authenticated tenant."""
+        claimed = {
+            "documents": 0,
+            "indexing_jobs": 0,
+            "sessions": 0,
+            "queries": 0,
+            "batches": 0,
+        }
+        visitor_id = identity.visitor_id
+        if not identity.authenticated or not visitor_id or visitor_id == identity.tenant_id:
+            return {"tenant_id": identity.tenant_id, "claimed": claimed}
+
+        self.ensure_schema()
+        ownership = self._jsonb({
+            "owner_id": identity.tenant_id,
+            "actor_id": identity.actor_id,
+        })
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE app_documents
+                    SET owner_id = %s, payload = payload || %s, updated_at = now()
+                    WHERE owner_id = %s
+                    RETURNING doc_id
+                    """,
+                    (identity.tenant_id, ownership, visitor_id),
+                )
+                document_ids = [str(row["doc_id"]) for row in cur.fetchall()]
+                claimed["documents"] = len(document_ids)
+
+                if document_ids:
+                    cur.execute(
+                        """
+                        UPDATE indexing_jobs
+                        SET payload = payload || %s, updated_at = now()
+                        WHERE doc_id = ANY(%s)
+                        """,
+                        (ownership, document_ids),
+                    )
+                    claimed["indexing_jobs"] = cur.rowcount
+
+                for table, key in (
+                    ("chat_sessions", "sessions"),
+                    ("query_history", "queries"),
+                    ("batch_qa_jobs", "batches"),
+                ):
+                    cur.execute(
+                        f"""
+                        UPDATE {table}
+                        SET owner_id = %s, payload = payload || %s, updated_at = now()
+                        WHERE owner_id = %s
+                        """,
+                        (identity.tenant_id, ownership, visitor_id),
+                    )
+                    claimed[key] = cur.rowcount
+            conn.commit()
+        return {"tenant_id": identity.tenant_id, "claimed": claimed}
+
     def record_audit(self, identity: RequestIdentity, event_type: str, request_id: str, payload: dict | None = None) -> None:
         if not identity.authenticated:
             return
