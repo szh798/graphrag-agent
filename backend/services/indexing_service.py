@@ -22,7 +22,7 @@ from storage import graph_repository as graph_store
 from storage import queue_repository as queue_store
 from pipeline.embeddings import embed_texts
 
-load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 # In-memory registry of active jobs {job_id: threading.Thread}
 _active_threads: dict[str, threading.Thread] = {}

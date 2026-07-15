@@ -12,7 +12,7 @@ import requests
 from requests import exceptions as requests_exceptions
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent.parent / ".env", override=True)
+load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
 ProgressCallback = Callable[[str, dict[str, Any]], None]
 
