@@ -278,6 +278,10 @@ def delete_document(doc_id: str) -> tuple[bool, int, int]:
     app_repo = app_store.get_app_repository()
     for meta in app_repo.list_all_jobs():
         if meta.get("doc_id") == doc_id:
+            for artifact in (meta.get("artifacts") or {}).values():
+                if isinstance(artifact, dict):
+                    blob_repo.delete(artifact)
+            fs.delete_job(meta["job_id"])
             app_repo.delete_job(meta["job_id"])
 
     # Remove from index

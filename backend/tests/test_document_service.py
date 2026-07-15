@@ -125,6 +125,54 @@ class DocumentServiceTests(unittest.TestCase):
                 },
             )
 
+    def test_delete_document_removes_upload_job_artifacts_and_job_directory(self):
+        from services import document_service as svc
+
+        deleted_blobs = []
+        deleted_jobs = []
+
+        class FakeAppRepo:
+            def get_document(self, doc_id):
+                return {"doc_id": doc_id, "blob_ref": {"url": "https://private.example/upload.pdf"}}
+
+            def list_all_jobs(self):
+                return [{
+                    "job_id": "job_1",
+                    "doc_id": "doc_1",
+                    "artifacts": {
+                        "stats.json": {"url": "https://private.example/stats.json"},
+                        "ignored": "not-a-reference",
+                    },
+                }]
+
+            def delete_job(self, job_id):
+                deleted_jobs.append(job_id)
+
+            def delete_document(self, _doc_id):
+                return True
+
+        class FakeBlobRepo:
+            def delete(self, blob_ref):
+                deleted_blobs.append(blob_ref)
+
+        with (
+            patch.object(svc.app_store, "get_app_repository", return_value=FakeAppRepo()),
+            patch.object(svc.graph_store, "get_graph_repository", return_value=type("Graph", (), {
+                "remove_document": lambda self, _doc_id: (2, 1),
+            })()),
+            patch.object(svc.blob_store, "get_blob_repository", return_value=FakeBlobRepo()),
+            patch.object(svc.fs, "delete_job") as delete_job_dir,
+        ):
+            result = svc.delete_document("doc_1")
+
+        self.assertEqual(result, (True, 2, 1))
+        self.assertEqual(deleted_jobs, ["job_1"])
+        self.assertEqual(deleted_blobs, [
+            {"url": "https://private.example/upload.pdf"},
+            {"url": "https://private.example/stats.json"},
+        ])
+        delete_job_dir.assert_called_once_with("job_1")
+
 
 if __name__ == "__main__":
     unittest.main()
