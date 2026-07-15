@@ -1,4 +1,6 @@
 """B 组：Indexing Pipeline（4 个端点）"""
+import asyncio
+
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 
@@ -9,6 +11,21 @@ from services import document_service as doc_svc
 from services import indexing_service as idx_svc
 
 router = APIRouter(prefix="/index", tags=["Indexing"])
+
+
+@router.post("/run-next")
+async def run_next_index_job(
+    internal_index: str = Header("", alias="X-GraphRAG-Internal-Index"),
+):
+    if internal_index != "1":
+        return JSONResponse(status_code=401, content=APIResponse.err(4001, "Unauthorized").model_dump())
+    result = await asyncio.to_thread(idx_svc.process_next_index_job, 1)
+    if not result:
+        return APIResponse.ok({"processed": False})
+    public_result = dict(result)
+    public_result.pop("owner_id", None)
+    public_result.pop("actor_id", None)
+    return APIResponse.ok({"processed": True, "job": public_result})
 
 
 @router.post("/start", status_code=202)

@@ -62,6 +62,23 @@ class MigrationsAndWorkerTests(unittest.TestCase):
         self.assertEqual(result["job_id"], "job_1")
         self.assertEqual(processed, [7])
 
+    def test_cancelled_queued_index_job_does_not_run_pipeline(self):
+        from services import indexing_service
+
+        cancelled = {
+            "job_id": "job_cancelled",
+            "doc_id": "doc_1",
+            "status": "cancelled",
+        }
+        with (
+            patch.object(indexing_service, "_load_job_meta", return_value=cancelled),
+            patch.object(indexing_service, "_run_pipeline") as run_pipeline,
+        ):
+            result = indexing_service.run_queued_job("job_cancelled")
+
+        self.assertEqual(result, cancelled)
+        run_pipeline.assert_not_called()
+
     def test_documents_only_import_does_not_copy_private_runtime_history(self):
         from scripts import import_file_store_to_postgres as importer
 

@@ -156,6 +156,28 @@ async function proxyApi(
   })
 }
 
+async function dispatchIndexWorker(env: Env, visitorId: string, requestId: string): Promise<void> {
+  if (!env.BACKEND_ORIGIN || !env.BACKEND_PROXY_SECRET) return
+  try {
+    const response = await fetch(new URL('/api/index-dispatch', env.BACKEND_ORIGIN), {
+      method: 'POST',
+      headers: {
+        'X-GraphRAG-Proxy-Secret': env.BACKEND_PROXY_SECRET,
+        'X-GraphRAG-Visitor-ID': visitorId,
+        'X-Request-ID': requestId,
+      },
+    })
+    if (!response.ok) throw new Error(`Index dispatch returned HTTP ${response.status}`)
+  } catch (error) {
+    await reportEdgeEvent(env, visitorId, {
+      severity: 'error',
+      eventType: 'index_dispatch_failed',
+      message: error instanceof Error ? error.name : 'Unknown index dispatch error',
+      requestId,
+    })
+  }
+}
+
 async function enforcePaidRouteProtection(
   request: Request,
   env: Env,
@@ -365,6 +387,10 @@ export default {
             visitor.id,
             env.BACKEND_PROXY_SECRET,
           )
+          if (request.method === 'POST' && url.pathname === '/api/v1/index/start' && response.ok) {
+            const requestId = response.headers.get('X-Request-ID') || crypto.randomUUID()
+            ctx.waitUntil(dispatchIndexWorker(env, visitor.id, requestId))
+          }
           if (response.status >= 500) {
             const requestId = response.headers.get('X-Request-ID') || crypto.randomUUID()
             ctx.waitUntil(reportEdgeEvent(env, visitor.id, {

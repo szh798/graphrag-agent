@@ -148,6 +148,13 @@ def _load_job_meta(job_id: str) -> dict | None:
     return app_store.get_app_repository().load_job_meta(job_id)
 
 
+def _is_cancelled(job_id: str) -> bool:
+    if _cancel_flags.get(job_id):
+        return True
+    meta = _load_job_meta(job_id)
+    return bool(meta and meta.get("status") == "cancelled")
+
+
 def _save_job_artifact(job_id: str, name: str, data) -> None:
     job_dir = fs.job_dir(job_id)
     fs.write_json(job_dir / name, data)
@@ -199,7 +206,7 @@ def _run_pipeline(job_id: str) -> None:
 
     try:
         # ── Stage 1: parsing ──────────────────────────────────────────────
-        if _cancel_flags.get(job_id):
+        if _is_cancelled(job_id):
             _update_meta(job_id, status="cancelled", stage="Cancelled")
             return
 
@@ -244,7 +251,7 @@ def _run_pipeline(job_id: str) -> None:
             )
 
         # ── Stage 2: extracting ───────────────────────────────────────────
-        if _cancel_flags.get(job_id):
+        if _is_cancelled(job_id):
             _update_meta(job_id, status="cancelled", stage="Cancelled")
             return
 
@@ -270,7 +277,7 @@ def _run_pipeline(job_id: str) -> None:
         total_entities = 0
 
         for i, page in enumerate(pages):
-            if _cancel_flags.get(job_id):
+            if _is_cancelled(job_id):
                 _update_meta(job_id, status="cancelled", stage="Cancelled")
                 return
 
@@ -399,6 +406,9 @@ def count_active_jobs() -> int:
 
 
 def run_queued_job(job_id: str) -> dict | None:
+    meta = _load_job_meta(job_id)
+    if not meta or meta.get("status") == "cancelled":
+        return meta
     _cancel_flags[job_id] = False
     _run_pipeline(job_id)
     return get_job_status(job_id)

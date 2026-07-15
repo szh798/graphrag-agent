@@ -3,6 +3,10 @@
   "outputDirectory": "frontend/dist/client",
   "installCommand": "npm ci && npm --prefix frontend ci --legacy-peer-deps",
   "framework": "vite",
+  "functions": {
+    "api/index.py": { "maxDuration": 300 },
+    "api/index-dispatch.ts": { "maxDuration": 300 }
+  },
   "rewrites": [
     {
       "source": "/api/v1/documents/upload/direct",
