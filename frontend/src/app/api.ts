@@ -268,11 +268,12 @@ export interface ApiUsageSummary {
   days: number;
   scope: 'user' | 'tenant';
   pricing_configured: boolean;
+  currency: 'CNY';
   total: {
     events: number;
     input_tokens: number;
     output_tokens: number;
-    cost_usd: number;
+    cost_cny: number;
   };
   breakdown: Array<{
     operation: string;
@@ -281,7 +282,7 @@ export interface ApiUsageSummary {
     events: number;
     input_tokens: number;
     output_tokens: number;
-    cost_usd: number;
+    cost_cny: number;
   }>;
 }
 

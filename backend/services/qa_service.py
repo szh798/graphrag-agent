@@ -246,9 +246,9 @@ def run_query(
         if output_tokens <= 0:
             output_tokens = max(1, (len(str(result.get("answer") or "")) + 3) // 4)
             estimated = True
-        input_price = float(os.getenv("LLM_INPUT_USD_PER_1M_TOKENS", "0") or 0)
-        output_price = float(os.getenv("LLM_OUTPUT_USD_PER_1M_TOKENS", "0") or 0)
-        cost_microusd = round(input_tokens * input_price + output_tokens * output_price)
+        input_price = float(os.getenv("LLM_INPUT_CNY_PER_1M_TOKENS", "0") or 0)
+        output_price = float(os.getenv("LLM_OUTPUT_CNY_PER_1M_TOKENS", "0") or 0)
+        cost_microcny = round(input_tokens * input_price + output_tokens * output_price)
         try:
             get_account_repository().record_usage(
                 tenant_id=tenant_id or owner_id,
@@ -258,7 +258,7 @@ def run_query(
                 model=LLM_MODEL,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                cost_microusd=cost_microusd,
+                cost_microcny=cost_microcny,
                 request_id=get_request_id(),
                 payload={"estimated_tokens": estimated, "duration_seconds": elapsed},
             )

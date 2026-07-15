@@ -78,12 +78,13 @@ class PostgresAccountRepository:
               model TEXT NOT NULL DEFAULT '',
               input_tokens BIGINT NOT NULL DEFAULT 0,
               output_tokens BIGINT NOT NULL DEFAULT 0,
-              cost_microusd BIGINT NOT NULL DEFAULT 0,
+              cost_microcny BIGINT NOT NULL DEFAULT 0,
               request_id TEXT,
               payload JSONB NOT NULL DEFAULT '{}'::jsonb,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
             """,
+            "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_microcny BIGINT NOT NULL DEFAULT 0",
             "CREATE INDEX IF NOT EXISTS usage_events_tenant_created_idx ON usage_events(tenant_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS usage_events_user_created_idx ON usage_events(user_id, created_at DESC)",
             """
@@ -207,7 +208,7 @@ class PostgresAccountRepository:
         model: str,
         input_tokens: int,
         output_tokens: int,
-        cost_microusd: int,
+        cost_microcny: int,
         request_id: str,
         payload: dict | None = None,
     ) -> None:
@@ -218,12 +219,12 @@ class PostgresAccountRepository:
                     """
                     INSERT INTO usage_events(
                       event_id, tenant_id, user_id, operation, provider, model,
-                      input_tokens, output_tokens, cost_microusd, request_id, payload
+                      input_tokens, output_tokens, cost_microcny, request_id, payload
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         f"use_{uuid.uuid4().hex}", tenant_id, user_id, operation, provider, model,
-                        max(0, int(input_tokens)), max(0, int(output_tokens)), max(0, int(cost_microusd)),
+                        max(0, int(input_tokens)), max(0, int(output_tokens)), max(0, int(cost_microcny)),
                         request_id, self._jsonb(payload or {}),
                     ),
                 )
@@ -245,7 +246,7 @@ class PostgresAccountRepository:
                       count(*) AS events,
                       COALESCE(sum(input_tokens), 0) AS input_tokens,
                       COALESCE(sum(output_tokens), 0) AS output_tokens,
-                      COALESCE(sum(cost_microusd), 0) AS cost_microusd
+                      COALESCE(sum(cost_microcny), 0) AS cost_microcny
                     FROM usage_events WHERE {where}
                     """,
                     tuple(params),
@@ -256,22 +257,23 @@ class PostgresAccountRepository:
                     SELECT operation, provider, model, count(*) AS events,
                       sum(input_tokens) AS input_tokens,
                       sum(output_tokens) AS output_tokens,
-                      sum(cost_microusd) AS cost_microusd
+                      sum(cost_microcny) AS cost_microcny
                     FROM usage_events WHERE {where}
                     GROUP BY operation, provider, model
-                    ORDER BY cost_microusd DESC, events DESC
+                    ORDER BY cost_microcny DESC, events DESC
                     """,
                     tuple(params),
                 )
                 breakdown = [dict(row) for row in cur.fetchall()]
-        total["cost_usd"] = round(int(total.pop("cost_microusd")) / 1_000_000, 6)
+        total["cost_cny"] = round(int(total.pop("cost_microcny")) / 1_000_000, 6)
         for row in breakdown:
-            row["cost_usd"] = round(int(row.pop("cost_microusd") or 0) / 1_000_000, 6)
-        input_price = float(os.getenv("LLM_INPUT_USD_PER_1M_TOKENS", "0") or 0)
-        output_price = float(os.getenv("LLM_OUTPUT_USD_PER_1M_TOKENS", "0") or 0)
+            row["cost_cny"] = round(int(row.pop("cost_microcny") or 0) / 1_000_000, 6)
+        input_price = float(os.getenv("LLM_INPUT_CNY_PER_1M_TOKENS", "0") or 0)
+        output_price = float(os.getenv("LLM_OUTPUT_CNY_PER_1M_TOKENS", "0") or 0)
         return {
             "days": days,
             "pricing_configured": input_price > 0 or output_price > 0,
+            "currency": "CNY",
             "total": total,
             "breakdown": breakdown,
         }
@@ -291,7 +293,7 @@ class PostgresAccountRepository:
                 cur.execute(
                     """
                     SELECT operation, provider, model, input_tokens, output_tokens,
-                           cost_microusd, request_id, payload, created_at
+                           cost_microcny, request_id, payload, created_at
                     FROM usage_events WHERE tenant_id = %s ORDER BY created_at
                     """,
                     (identity.tenant_id,),
@@ -342,7 +344,7 @@ class PostgresAccountRepository:
                 cur.execute(
                     """
                     SELECT operation, provider, model, input_tokens, output_tokens,
-                           cost_microusd, request_id, payload, created_at
+                           cost_microcny, request_id, payload, created_at
                     FROM usage_events WHERE user_id = %s ORDER BY created_at
                     """,
                     (identity.actor_id,),

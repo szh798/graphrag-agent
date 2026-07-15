@@ -52,7 +52,7 @@ function UsagePanel({ usage, title }: { usage: ApiUsageSummary | null; title: st
           ['调用次数', formatNumber(usage?.total.events)],
           ['输入 Token', formatNumber(usage?.total.input_tokens)],
           ['输出 Token', formatNumber(usage?.total.output_tokens)],
-          ['估算成本', usage?.pricing_configured ? `$${Number(usage.total.cost_usd).toFixed(6)}` : '价格未配置'],
+          ['估算成本', usage?.pricing_configured ? `¥${Number(usage.total.cost_cny).toFixed(6)}` : '价格未配置'],
         ].map(([label, value]) => (
           <div key={label} className="rounded-md p-3" style={{ background: 'var(--bg-s2)' }}>
             <div style={{ color: 'var(--text-4)', fontSize: 11 }}>{label}</div>
