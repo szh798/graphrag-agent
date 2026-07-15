@@ -104,6 +104,11 @@ class AccountClaimRepositoryTests(unittest.TestCase):
         for query, params in connection.cursor_instance.executions:
             if query.startswith("UPDATE") and "indexing_jobs" not in query:
                 self.assertEqual(params[-1], VISITOR_ID)
+        query_history_update = next(
+            query for query, _params in connection.cursor_instance.executions
+            if query.startswith("UPDATE query_history")
+        )
+        self.assertNotIn("updated_at", query_history_update)
 
     def test_claim_without_visitor_is_an_idempotent_noop(self):
         identity = RequestIdentity(

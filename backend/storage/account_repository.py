@@ -218,15 +218,16 @@ class PostgresAccountRepository:
                     )
                     claimed["indexing_jobs"] = cur.rowcount
 
-                for table, key in (
-                    ("chat_sessions", "sessions"),
-                    ("query_history", "queries"),
-                    ("batch_qa_jobs", "batches"),
+                for table, key, touch_updated_at in (
+                    ("chat_sessions", "sessions", True),
+                    ("query_history", "queries", False),
+                    ("batch_qa_jobs", "batches", True),
                 ):
+                    updated_at = ", updated_at = now()" if touch_updated_at else ""
                     cur.execute(
                         f"""
                         UPDATE {table}
-                        SET owner_id = %s, payload = payload || %s, updated_at = now()
+                        SET owner_id = %s, payload = payload || %s{updated_at}
                         WHERE owner_id = %s
                         """,
                         (identity.tenant_id, ownership, visitor_id),
