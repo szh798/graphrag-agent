@@ -9,6 +9,7 @@ import { TYPE_COLORS } from '../../mock-data';
 
 function AccountControls() {
   const { isLoaded, isSignedIn } = useAuth();
+  const organizationsEnabled = import.meta.env.VITE_CLERK_ORGANIZATIONS_ENABLED === 'true';
   if (!isLoaded) return null;
   return (
     <div className="flex items-center gap-2" style={{ marginLeft: 'auto' }}>
@@ -25,7 +26,7 @@ function AccountControls() {
       )}
       {isSignedIn && (
         <>
-          <OrganizationSwitcher />
+          {organizationsEnabled && <OrganizationSwitcher />}
           <UserButton />
         </>
       )}
