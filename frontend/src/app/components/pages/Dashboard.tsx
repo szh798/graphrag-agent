@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router';
-import { Share2, MessageSquare, Search, Zap, FileText, ExternalLink, LockKeyhole } from 'lucide-react';
+import { Share2, MessageSquare, Search, Zap, FileText, ExternalLink, UploadCloud } from 'lucide-react';
 import { useAppState } from '../../store';
 
 const statCards = [
@@ -31,7 +31,7 @@ export function Dashboard() {
           className="flex items-center gap-2 px-3 py-1.5 rounded-md"
           style={{ background: 'rgba(63,185,80,0.08)', color: 'var(--green)', fontSize: 12, fontWeight: 500, border: '1px solid rgba(63,185,80,0.22)' }}
         >
-          <LockKeyhole size={13} /> 公开演示 · 文档与索引只读
+          <UploadCloud size={13} /> 公开演示 · 可上传并索引
         </span>
       </div>
 
@@ -85,6 +85,7 @@ export function Dashboard() {
               { icon: Share2, label: '浏览图谱', path: '/graph' },
               { icon: MessageSquare, label: '开始对话', path: '/chat' },
               { icon: Search, label: '搜索', path: '/search' },
+              { icon: UploadCloud, label: '上传文档', path: '/documents' },
               { icon: Zap, label: '演示', path: '/graph' },
             ].map(a => (
               <button
@@ -174,7 +175,13 @@ export function Dashboard() {
                       </button>
                     )}
                     {doc.status === 'uploaded' && (
-                      <span style={{ fontSize: 11, color: 'var(--text-4)' }}>仅查看</span>
+                      <button
+                        onClick={() => navigate('/documents')}
+                        className="px-2 py-1 rounded cursor-pointer"
+                        style={{ fontSize: 11, background: 'rgba(63,185,80,0.12)', color: 'var(--green)', border: 'none' }}
+                      >
+                        开始索引
+                      </button>
                     )}
                     {doc.status === 'indexing' && (
                       <div className="flex items-center gap-2">
@@ -185,7 +192,13 @@ export function Dashboard() {
                       </div>
                     )}
                     {doc.status === 'failed' && (
-                      <span style={{ fontSize: 11, color: 'var(--text-4)' }}>仅查看</span>
+                      <button
+                        onClick={() => navigate('/documents')}
+                        className="px-2 py-1 rounded cursor-pointer"
+                        style={{ fontSize: 11, background: 'rgba(63,185,80,0.12)', color: 'var(--green)', border: 'none' }}
+                      >
+                        重新索引
+                      </button>
                     )}
                   </span>
                 </div>

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +16,8 @@ if str(BACKEND_DIR) not in sys.path:
 from identity import resolve_identity
 from models.schemas import APIResponse
 from observability import RequestContextMiddleware
+from public_access import visible_document_ids
+from services.document_service import public_document
 
 
 VISITOR_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -53,6 +55,34 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(identity.tenant_id, "user:user_456")
         self.assertEqual(identity.role, "owner")
         self.assertTrue(identity.is_admin)
+
+
+class DocumentVisibilityTests(unittest.TestCase):
+    def test_public_corpus_is_combined_with_current_owner_documents(self):
+        repository = Mock()
+        repository.list_documents.return_value = [
+            {"doc_id": "own-doc", "owner_id": VISITOR_ID},
+            {"doc_id": "other-doc", "owner_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},
+        ]
+        with (
+            patch.dict("os.environ", {"PUBLIC_DOCUMENT_IDS": "public-doc"}, clear=False),
+            patch("storage.app_repository.get_app_repository", return_value=repository),
+        ):
+            allowed = visible_document_ids("1", VISITOR_ID)
+
+        self.assertEqual(allowed, {"public-doc", "own-doc"})
+
+    def test_public_document_hides_ownership_and_blob_metadata(self):
+        payload = public_document({
+            "doc_id": "doc-1",
+            "filename": "notes.md",
+            "owner_id": VISITOR_ID,
+            "actor_id": "user_1",
+            "blob_ref": {"url": "private"},
+            "blob_key": "uploads/notes.md",
+        })
+
+        self.assertEqual(payload, {"doc_id": "doc-1", "filename": "notes.md"})
 
 
 class RequestIdTests(unittest.TestCase):

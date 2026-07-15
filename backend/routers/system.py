@@ -5,10 +5,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends, Header
 
+from identity import RequestIdentity, get_request_identity
 from models.schemas import APIResponse
-from public_access import PUBLIC_DEMO_HEADER, public_document_ids
+from public_access import PUBLIC_DEMO_HEADER, visible_document_ids
 from pipeline.llm_config import LLM_API_KEY, LLM_BASE_URL, LLM_INDEX_MODEL, LLM_MODEL, LLM_PROVIDER
 from services.local_parser import SUPPORTED_LOCAL_EXTENSIONS
 from storage import app_repository as app_store
@@ -247,14 +248,14 @@ async def ready_check():
 @router.get("/system/stats")
 async def system_stats(
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
-    visitor_id: str | None = Header(default=None, alias="X-GraphRAG-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ):
     global _stats_cache
     now = time.monotonic()
-    allowed_ids = public_document_ids(public_demo)
+    allowed_ids = visible_document_ids(public_demo, identity.owner_id)
     cache_key = (
         tuple(sorted(allowed_ids)) if allowed_ids is not None else None,
-        visitor_id if allowed_ids is not None else None,
+        identity.owner_id if allowed_ids is not None else None,
     )
     cached = _stats_cache.get(cache_key)
     if cached and now - cached[0] < _STATS_CACHE_TTL_SECONDS:
@@ -269,7 +270,7 @@ async def system_stats(
     from services import kg_service
 
     kg_stats = kg_service.get_stats(allowed_ids)
-    history = app_repo.load_query_history(visitor_id or app_store.LEGACY_OWNER_ID)
+    history = app_repo.load_query_history(identity.owner_id)
 
     payload = {
         "total_documents": len(docs),

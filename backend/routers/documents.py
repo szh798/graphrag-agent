@@ -1,12 +1,13 @@
 """A 组：文档管理（4 个端点）"""
 from io import BytesIO
 
-from fastapi import APIRouter, File, Form, Header, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from models.schemas import APIResponse
-from public_access import PUBLIC_DEMO_HEADER, document_is_visible, public_document_ids
+from identity import RequestIdentity, get_request_identity
+from public_access import PUBLIC_DEMO_HEADER, document_is_visible, visible_document_ids
 from services import document_service as svc
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -30,6 +31,8 @@ class CompleteDirectUploadRequest(BaseModel):
     enableFormula: bool = True
     enableTable: bool = True
     blob: DirectUploadBlob
+    ownerId: str = Field(min_length=1, max_length=160)
+    actorId: str | None = Field(default=None, max_length=160)
 
 
 def _upload_error(code: int, message: str) -> JSONResponse:
@@ -86,12 +89,21 @@ async def upload_document(
     language: str = Form("ch"),
     enable_formula: bool = Form(True),
     enable_table: bool = Form(True),
+    identity: RequestIdentity = Depends(get_request_identity),
 ):
     content, error = await _read_validated_upload(file)
     if error is not None:
         return error
     assert content is not None
-    doc = svc.save_upload(file.filename or "upload", content, language, enable_formula, enable_table)
+    doc = svc.save_upload(
+        file.filename or "upload",
+        content,
+        language,
+        enable_formula,
+        enable_table,
+        owner_id=identity.owner_id,
+        actor_id=identity.actor_id if identity.authenticated else None,
+    )
     return APIResponse.ok(svc.public_document(doc))
 
 
@@ -114,6 +126,8 @@ async def complete_direct_upload(
             language=body.language,
             enable_formula=body.enableFormula,
             enable_table=body.enableTable,
+            owner_id=body.ownerId,
+            actor_id=body.actorId,
         )
     except ValueError as exc:
         raw = str(exc)
@@ -127,9 +141,10 @@ async def complete_direct_upload(
 async def get_document(
     doc_id: str,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+    identity: RequestIdentity = Depends(get_request_identity),
 ):
     doc = svc.get_document(doc_id)
-    if not doc or not document_is_visible(doc_id, public_document_ids(public_demo)):
+    if not doc or not document_is_visible(doc_id, visible_document_ids(public_demo, identity.owner_id)):
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
@@ -141,9 +156,10 @@ async def get_document(
 async def get_document_index_result(
     doc_id: str,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+    identity: RequestIdentity = Depends(get_request_identity),
 ):
     doc = svc.get_document(doc_id)
-    if not doc or not document_is_visible(doc_id, public_document_ids(public_demo)):
+    if not doc or not document_is_visible(doc_id, visible_document_ids(public_demo, identity.owner_id)):
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
@@ -163,9 +179,10 @@ async def get_document_extractions(
     page: int = 1,
     page_size: int = 50,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+    identity: RequestIdentity = Depends(get_request_identity),
 ):
     doc = svc.get_document(doc_id)
-    if not doc or not document_is_visible(doc_id, public_document_ids(public_demo)):
+    if not doc or not document_is_visible(doc_id, visible_document_ids(public_demo, identity.owner_id)):
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
@@ -186,23 +203,26 @@ async def list_documents(
     status: str | None = None,
     format: str | None = None,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+    identity: RequestIdentity = Depends(get_request_identity),
 ):
     page_size = min(page_size, 100)
-    result = svc.list_documents(page, page_size, status, format)
-    allowed_ids = public_document_ids(public_demo)
-    if allowed_ids is not None:
-        result["items"] = [item for item in result["items"] if item.get("doc_id") in allowed_ids]
-        result["total"] = len(result["items"])
+    allowed_ids = visible_document_ids(public_demo, identity.owner_id)
+    result = svc.list_documents(page, page_size, status, format, allowed_ids=allowed_ids)
     return APIResponse.ok(result)
 
 
 @router.delete("/{doc_id}")
-async def delete_document(doc_id: str):
+async def delete_document(doc_id: str, identity: RequestIdentity = Depends(get_request_identity)):
     doc = svc.get_document(doc_id)
     if not doc:
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
+        )
+    if str(doc.get("owner_id") or "default") != identity.owner_id:
+        return JSONResponse(
+            status_code=403,
+            content=APIResponse.err(4003, "Only the document owner can delete it").model_dump(),
         )
     ok, removed_nodes, removed_edges = svc.delete_document(doc_id)
     return APIResponse.ok({

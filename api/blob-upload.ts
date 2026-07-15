@@ -29,6 +29,8 @@ type UploadMetadata = {
   language?: string
   enableFormula?: boolean
   enableTable?: boolean
+  ownerId?: string
+  actorId?: string
 }
 
 function secureEqual(left: string, right: string): boolean {
@@ -69,11 +71,46 @@ function parseMetadata(value: string | null | undefined): UploadMetadata {
     language: typeof parsed.language === 'string' ? parsed.language : 'ch',
     enableFormula: parsed.enableFormula !== false,
     enableTable: parsed.enableTable !== false,
+    ownerId: typeof parsed.ownerId === 'string' && parsed.ownerId.length <= 160
+      ? parsed.ownerId
+      : undefined,
+    actorId: typeof parsed.actorId === 'string' && parsed.actorId.length <= 160
+      ? parsed.actorId
+      : undefined,
   }
 }
 
 function callbackOrigin(request: Request): string {
   return new URL(request.url).origin
+}
+
+async function resolveUploadOwner(request: Request): Promise<{ ownerId: string; actorId?: string }> {
+  const visitorId = request.headers.get('x-graphrag-visitor-id')?.trim() ?? ''
+  const fallback = { ownerId: visitorId || 'default' }
+  const authorization = request.headers.get('authorization')?.trim() ?? ''
+  if (!authorization) return fallback
+
+  try {
+    const response = await fetch(`${callbackOrigin(request)}/api/v1/account/me`, {
+      headers: {
+        Authorization: authorization,
+        'X-GraphRAG-Proxy-Secret': process.env.BACKEND_PROXY_SECRET ?? '',
+        'X-GraphRAG-Public-Demo': '1',
+        'X-GraphRAG-Visitor-ID': visitorId,
+        'X-Request-ID': crypto.randomUUID(),
+      },
+    })
+    if (!response.ok) return fallback
+    const payload = await response.json() as {
+      data?: { tenant_id?: string; user_id?: string }
+    }
+    const ownerId = payload.data?.tenant_id?.trim()
+    if (!ownerId || ownerId.length > 160) return fallback
+    const actorId = payload.data?.user_id?.trim()
+    return actorId && actorId.length <= 160 ? { ownerId, actorId } : { ownerId }
+  } catch {
+    return fallback
+  }
 }
 
 export default async function handler(request: Request): Promise<Response> {
@@ -92,6 +129,7 @@ export default async function handler(request: Request): Promise<Response> {
       onBeforeGenerateToken: async (pathname, clientPayload, multipart) => {
         requireTrustedProxy(request)
         const metadata = parseMetadata(clientPayload)
+        const ownership = await resolveUploadOwner(request)
         const expectedPath = `uploads/${metadata.filename}`
         if (pathname !== expectedPath) throw new Error('Upload pathname does not match filename')
         if (metadata.sizeBytes > 100 * 1024 * 1024 && !multipart) {
@@ -103,12 +141,13 @@ export default async function handler(request: Request): Promise<Response> {
           addRandomSuffix: true,
           allowOverwrite: false,
           validUntil: Date.now() + 15 * 60 * 1000,
-          tokenPayload: JSON.stringify(metadata),
+          tokenPayload: JSON.stringify({ ...metadata, ...ownership }),
           callbackUrl: `${callbackOrigin(request)}/api/v1/documents/upload/direct`,
         }
       },
       onUploadCompleted: async ({ blob, tokenPayload }) => {
         const metadata = parseMetadata(tokenPayload)
+        if (!metadata.ownerId) throw new Error('Upload owner is missing')
         const details = await head(blob.url, { token: process.env.BLOB_READ_WRITE_TOKEN })
         if (details.size > MAX_UPLOAD_BYTES) throw new Error('Uploaded file exceeds 200MB')
 
@@ -127,6 +166,8 @@ export default async function handler(request: Request): Promise<Response> {
               sizeBytes: details.size,
               contentType: details.contentType,
               blob,
+              ownerId: metadata.ownerId,
+              actorId: metadata.actorId,
             }),
           },
         )

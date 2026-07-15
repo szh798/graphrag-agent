@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from models.schemas import APIResponse, BatchQueryRequest, QueryRequest
-from public_access import PUBLIC_DEMO_HEADER, public_document_ids
+from public_access import PUBLIC_DEMO_HEADER, visible_document_ids
 from services import qa_service as svc
 from identity import RequestIdentity, VISITOR_ID_HEADER, get_request_identity
 from operations import report_exception
@@ -49,7 +49,7 @@ async def run_query(
                 identity.owner_id,
                 body.session_id,
                 persist_session=stateless_batch != "1",
-                allowed_document_ids=public_document_ids(public_demo),
+                allowed_document_ids=visible_document_ids(public_demo, identity.owner_id),
                 actor_id=identity.actor_id if identity.authenticated else None,
                 tenant_id=identity.tenant_id,
             ),
@@ -100,7 +100,7 @@ async def stream_query(
                     [m.model_dump() for m in body.history],
                     identity.owner_id,
                     body.session_id,
-                    allowed_document_ids=public_document_ids(public_demo),
+                    allowed_document_ids=visible_document_ids(public_demo, identity.owner_id),
                     actor_id=identity.actor_id if identity.authenticated else None,
                     tenant_id=identity.tenant_id,
                 ),

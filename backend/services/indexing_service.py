@@ -113,6 +113,8 @@ def start_indexing(doc_id: str) -> dict:
         "pdf_name": doc["filename"],
         "pdf_path": str(fs.UPLOADS_DIR / doc.get("upload_filename", "")),
         "blob_key": doc.get("blob_key"),
+        "owner_id": str(doc.get("owner_id") or "default"),
+        "actor_id": doc.get("actor_id"),
         "artifacts": {},
     }
     app_repo.save_job_meta(job_id, meta)

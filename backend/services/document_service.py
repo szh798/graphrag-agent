@@ -62,7 +62,7 @@ def public_document(doc: dict) -> dict:
     if uploaded_at:
         item["uploaded_at"] = uploaded_at
         item["upload_date"] = uploaded_at
-    for internal_key in ("upload_filename", "blob_key", "blob_url", "blob_ref"):
+    for internal_key in ("upload_filename", "blob_key", "blob_url", "blob_ref", "owner_id", "actor_id"):
         item.pop(internal_key, None)
     return item
 
@@ -119,7 +119,8 @@ def validate_upload_content(
 
 
 def save_upload(filename: str, content: bytes, language: str = "ch",
-                enable_formula: bool = True, enable_table: bool = True) -> dict:
+                enable_formula: bool = True, enable_table: bool = True,
+                owner_id: str = "default", actor_id: str | None = None) -> dict:
     doc_id = uuid.uuid4().hex[:8]
     upload_filename = f"{doc_id}_{filename}"
     blob_ref = blob_store.get_blob_repository().save_upload(upload_filename, content)
@@ -132,6 +133,8 @@ def save_upload(filename: str, content: bytes, language: str = "ch",
         enable_table=enable_table,
         upload_filename=upload_filename,
         blob_ref=blob_ref,
+        owner_id=owner_id,
+        actor_id=actor_id,
     )
 
 
@@ -146,6 +149,8 @@ def _save_document_record(
     upload_filename: str,
     blob_ref: dict,
     content_type: str | None = None,
+    owner_id: str = "default",
+    actor_id: str | None = None,
 ) -> dict:
     ext = Path(filename).suffix.lower().lstrip(".")
 
@@ -167,7 +172,10 @@ def _save_document_record(
         "blob_url": blob_ref.get("url", ""),
         "blob_ref": blob_ref,
         "content_type": content_type or blob_ref.get("contentType") or blob_ref.get("content_type"),
+        "owner_id": owner_id,
     }
+    if actor_id:
+        doc["actor_id"] = actor_id
     app_store.get_app_repository().save_document(doc)
     return doc
 
@@ -180,6 +188,8 @@ def register_direct_upload(
     language: str = "ch",
     enable_formula: bool = True,
     enable_table: bool = True,
+    owner_id: str = "default",
+    actor_id: str | None = None,
 ) -> dict:
     """Register a browser-to-Blob upload after Vercel confirms completion."""
     ok, code, message = validate_upload(filename, size_bytes)
@@ -215,6 +225,8 @@ def register_direct_upload(
         upload_filename=pathname,
         blob_ref=normalized_blob,
         content_type=mime,
+        owner_id=owner_id,
+        actor_id=actor_id,
     )
 
 
@@ -223,9 +235,12 @@ def get_document(doc_id: str) -> dict | None:
 
 
 def list_documents(page: int = 1, page_size: int = 20,
-                   status: str | None = None, fmt: str | None = None) -> dict:
+                   status: str | None = None, fmt: str | None = None,
+                   allowed_ids: set[str] | None = None) -> dict:
     items = app_store.get_app_repository().list_documents()
     items.sort(key=lambda d: d.get("uploaded_at", ""), reverse=True)
+    if allowed_ids is not None:
+        items = [d for d in items if d.get("doc_id") in allowed_ids]
     if status:
         items = [d for d in items if d.get("status") == status]
     if fmt:

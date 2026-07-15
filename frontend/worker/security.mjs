@@ -59,6 +59,18 @@ export function classifyApiRequest(method, rawPathname) {
   const normalizedMethod = method.toUpperCase()
   const pathname = normalizedPath(rawPathname)
 
+  if (normalizedMethod === 'POST' && pathname === '/api/v1/documents/upload/direct') {
+    return { action: 'allow' }
+  }
+
+  if (normalizedMethod === 'POST' && pathname === '/api/v1/index/start') {
+    return { action: 'allow' }
+  }
+
+  if (normalizedMethod === 'DELETE' && /^\/api\/v1\/index\/jobs\/[^/]+$/.test(pathname)) {
+    return { action: 'allow' }
+  }
+
   if (matchesAny(pathname, accountRoutes)) {
     if (READ_METHODS.has(normalizedMethod) || normalizedMethod === 'DELETE') {
       return { action: 'allow' }

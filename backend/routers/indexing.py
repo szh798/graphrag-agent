@@ -1,8 +1,10 @@
 """B 组：Indexing Pipeline（4 个端点）"""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 
 from models.schemas import APIResponse, StartIndexRequest
+from identity import RequestIdentity, get_request_identity
+from public_access import PUBLIC_DEMO_HEADER, document_is_visible, visible_document_ids
 from services import document_service as doc_svc
 from services import indexing_service as idx_svc
 
@@ -10,12 +12,17 @@ router = APIRouter(prefix="/index", tags=["Indexing"])
 
 
 @router.post("/start", status_code=202)
-async def start_indexing(body: StartIndexRequest):
+async def start_indexing(body: StartIndexRequest, identity: RequestIdentity = Depends(get_request_identity)):
     doc = doc_svc.get_document(body.doc_id)
     if not doc:
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{body.doc_id}' not found").model_dump(),
+        )
+    if str(doc.get("owner_id") or "default") != identity.owner_id:
+        return JSONResponse(
+            status_code=403,
+            content=APIResponse.err(4003, "Only the document owner can start indexing").model_dump(),
         )
     meta = idx_svc.start_indexing(body.doc_id)
     return APIResponse.ok({
@@ -28,18 +35,34 @@ async def start_indexing(body: StartIndexRequest):
 
 
 @router.get("/status/{job_id}")
-async def get_job_status(job_id: str):
+async def get_job_status(
+    job_id: str,
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+    identity: RequestIdentity = Depends(get_request_identity),
+):
     meta = idx_svc.get_job_status(job_id)
     if not meta:
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2002, f"Job '{job_id}' not found").model_dump(),
         )
-    return APIResponse.ok(meta)
+    if not document_is_visible(str(meta.get("doc_id") or ""), visible_document_ids(public_demo, identity.owner_id)):
+        return JSONResponse(status_code=404, content=APIResponse.err(2002, f"Job '{job_id}' not found").model_dump())
+    public_meta = dict(meta)
+    public_meta.pop("owner_id", None)
+    public_meta.pop("actor_id", None)
+    return APIResponse.ok(public_meta)
 
 
 @router.get("/result/{job_id}")
-async def get_job_result(job_id: str):
+async def get_job_result(
+    job_id: str,
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+    identity: RequestIdentity = Depends(get_request_identity),
+):
+    meta = idx_svc.get_job_status(job_id)
+    if not meta or not document_is_visible(str(meta.get("doc_id") or ""), visible_document_ids(public_demo, identity.owner_id)):
+        return JSONResponse(status_code=404, content=APIResponse.err(2002, f"Job '{job_id}' not found").model_dump())
     result = idx_svc.get_job_result(job_id)
     if not result:
         return JSONResponse(
@@ -55,13 +78,15 @@ async def get_job_result(job_id: str):
 
 
 @router.delete("/jobs/{job_id}")
-async def cancel_job(job_id: str):
+async def cancel_job(job_id: str, identity: RequestIdentity = Depends(get_request_identity)):
     meta = idx_svc.get_job_status(job_id)
     if not meta:
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2002, f"Job '{job_id}' not found").model_dump(),
         )
+    if str(meta.get("owner_id") or "default") != identity.owner_id:
+        return JSONResponse(status_code=403, content=APIResponse.err(4003, "Only the job owner can cancel it").model_dump())
     ok, prev_status = idx_svc.cancel_job(job_id)
     return APIResponse.ok({
         "cancelled": True,

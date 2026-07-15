@@ -1,9 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
-import { FileText, LockKeyhole, X, ChevronDown, ChevronRight, Eye } from 'lucide-react';
+import { FileText, UploadCloud, X, ChevronDown, ChevronRight, Eye, Play, Square } from 'lucide-react';
 import { useAppState, type Document } from '../../store';
 import { api, ApiError, type ApiDocumentExtractions, type ApiIndexResult } from '../../api';
+import { uploadDocumentDirect } from '../../direct-upload';
 
 const statusStyles: Record<string, { bg: string; color: string }> = {
   indexed:  { bg: '#1a3a22', color: '#3fb950' },
@@ -13,7 +14,7 @@ const statusStyles: Record<string, { bg: string; color: string }> = {
 };
 
 export function Documents() {
-  const { documents, setDocuments } = useAppState();
+  const { documents, setDocuments, refreshDocuments } = useAppState();
   const navigate = useNavigate();
   const [formatFilter, setFormatFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -23,6 +24,9 @@ export function Documents() {
   const [extractionsDoc, setExtractionsDoc] = useState<Document | null>(null);
   const [extractions, setExtractions] = useState<ApiDocumentExtractions | null>(null);
   const [extractionsLoading, setExtractionsLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filteredDocs = documents.filter(d => {
     if (formatFilter !== 'All' && d.format !== formatFilter) return false;
@@ -77,6 +81,52 @@ export function Documents() {
     }
   }, []);
 
+  const handleUpload = useCallback(async (file: File) => {
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      await uploadDocumentDirect(file, {
+        onProgress: event => setUploadProgress(Math.round(event.percentage)),
+      });
+      toast.success('上传完成，正在登记文档');
+      for (const delay of [300, 700, 1200, 2000]) {
+        await new Promise(resolve => window.setTimeout(resolve, delay));
+        await refreshDocuments();
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '上传失败');
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, [refreshDocuments]);
+
+  const handleStartIndex = useCallback(async (doc: Document) => {
+    try {
+      const job = await api.startIndexing(doc.id);
+      setDocuments(items => items.map(item => item.id === doc.id
+        ? { ...item, status: 'indexing', job_id: job.job_id, progress: 0, error: undefined }
+        : item));
+      toast.success('索引任务已启动');
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : '索引启动失败');
+    }
+  }, [setDocuments]);
+
+  const handleCancelIndex = useCallback(async (doc: Document) => {
+    if (!doc.job_id) return;
+    try {
+      await api.cancelJob(doc.job_id);
+      setDocuments(items => items.map(item => item.id === doc.id
+        ? { ...item, status: 'uploaded', job_id: undefined, progress: undefined }
+        : item));
+      toast.success('索引任务已取消');
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : '取消索引失败');
+    }
+  }, [setDocuments]);
+
   return (
     <div className="page-shell documents-page p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
       <h1 className="mb-4" style={{ color: 'var(--text-1)', fontSize: 20, fontWeight: 600 }}>文档浏览</h1>
@@ -85,17 +135,36 @@ export function Documents() {
         className="flex items-start gap-3 rounded-lg px-4 py-3 mb-6"
         style={{ background: 'rgba(88,166,255,0.07)', border: '1px solid rgba(88,166,255,0.22)' }}
       >
-        <LockKeyhole size={17} style={{ color: 'var(--blue)', flexShrink: 0, marginTop: 1 }} />
+        <UploadCloud size={17} style={{ color: 'var(--blue)', flexShrink: 0, marginTop: 1 }} />
         <div>
-          <div style={{ color: 'var(--text-1)', fontSize: 13, fontWeight: 600 }}>公开演示模式</div>
+          <div style={{ color: 'var(--text-1)', fontSize: 13, fontWeight: 600 }}>上传与索引已开放</div>
           <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 2 }}>
-            可浏览现有文档、提取结果和知识图谱；上传、删除、启动与取消索引已关闭。智能问答和批量问答仍可使用。
+            支持 PDF、Office、图片、HTML、TXT 和 Markdown，单文件上限 200MB。你的文档按当前访客或登录空间隔离。
           </div>
         </div>
       </div>
 
       {/* Toolbar */}
       <div className="documents-toolbar flex items-center gap-3 mb-4">
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.html,.txt,.md,.markdown"
+          onChange={event => {
+            const file = event.target.files?.[0];
+            if (file) void handleUpload(file);
+          }}
+        />
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={() => fileInputRef.current?.click()}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer"
+          style={{ background: 'var(--blue)', border: 0, color: '#fff', fontSize: 13, opacity: uploading ? 0.7 : 1 }}
+        >
+          <UploadCloud size={14} /> {uploading ? `上传中 ${uploadProgress}%` : '上传文档'}
+        </button>
         <select
           value={formatFilter}
           onChange={e => setFormatFilter(e.target.value)}
@@ -201,7 +270,13 @@ export function Documents() {
                   </span>
                   <span className="flex items-center gap-2">
                     {doc.status === 'uploaded' && (
-                      <span style={{ fontSize: 11, color: 'var(--text-4)' }}>仅查看</span>
+                      <button
+                        onClick={() => void handleStartIndex(doc)}
+                        className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
+                        style={{ fontSize: 11, background: 'rgba(63,185,80,0.12)', color: 'var(--green)', border: '1px solid rgba(63,185,80,0.25)' }}
+                      >
+                        <Play size={10} /> 开始索引
+                      </button>
                     )}
                     {doc.status === 'indexing' && (
                       <>
@@ -211,6 +286,14 @@ export function Documents() {
                           </div>
                           <span style={{ fontSize: 10, color: 'var(--yellow)', whiteSpace: 'nowrap' }}>{doc.progress ?? 0}%</span>
                         </div>
+                        <button
+                          onClick={() => void handleCancelIndex(doc)}
+                          disabled={!doc.job_id}
+                          className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
+                          style={{ fontSize: 10, background: 'rgba(248,81,73,0.1)', color: 'var(--red)', border: '1px solid rgba(248,81,73,0.2)' }}
+                        >
+                          <Square size={9} /> 取消
+                        </button>
                       </>
                     )}
                     {doc.status === 'indexed' && (
@@ -223,7 +306,13 @@ export function Documents() {
                       </button>
                     )}
                     {doc.status === 'failed' && (
-                      <span style={{ fontSize: 11, color: 'var(--text-4)' }}>仅查看</span>
+                      <button
+                        onClick={() => void handleStartIndex(doc)}
+                        className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
+                        style={{ fontSize: 11, background: 'rgba(63,185,80,0.12)', color: 'var(--green)', border: '1px solid rgba(63,185,80,0.25)' }}
+                      >
+                        <Play size={10} /> 重新索引
+                      </button>
                     )}
                   </span>
                 </div>

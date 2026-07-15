@@ -52,13 +52,23 @@ test('public demo allowlist keeps read surfaces, QA, sessions, and every batch r
   })
 })
 
-test('document and index mutations are explicit 403 decisions', () => {
+test('upload token exchange and owned index actions are available', () => {
+  const cases = [
+    ['POST', '/api/v1/documents/upload/direct'],
+    ['POST', '/api/v1/index/start'],
+    ['DELETE', '/api/v1/index/jobs/job-1'],
+  ]
+
+  for (const [method, pathname] of cases) {
+    assert.equal(classifyApiRequest(method, pathname).action, 'allow', `${method} ${pathname}`)
+  }
+})
+
+test('other document mutations remain explicit 403 decisions', () => {
   const cases = [
     ['POST', '/api/v1/documents/upload'],
     ['DELETE', '/api/v1/documents/doc-1'],
     ['PATCH', '/api/v1/documents/doc-1'],
-    ['POST', '/api/v1/index/start'],
-    ['DELETE', '/api/v1/index/jobs/job-1'],
   ]
 
   for (const [method, pathname] of cases) {
