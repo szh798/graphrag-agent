@@ -19,6 +19,7 @@ dependencies = [
     "neo4j>=5.23.0",
     "psycopg[binary]>=3.2.0",
     "vercel-blob>=0.4.2",
+    "PyJWT[crypto]>=2.10.0",
 ]
 
 [build-system]

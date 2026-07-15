@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { LayoutDashboard, FileText, Share2, MessageSquare, Search, Settings } from 'lucide-react';
+import { LayoutDashboard, FileText, Share2, MessageSquare, Search, Settings, CircleUserRound } from 'lucide-react';
 import { useAppState } from '../../store';
 
 const navItems = [
@@ -90,6 +90,21 @@ export function Sidebar({ mobileOpen = false, onNavigate }: { mobileOpen?: boole
       </div>
 
       <div className="mt-auto px-2">
+        <button
+          onClick={() => { navigate('/account'); onNavigate?.(); }}
+          className="flex items-center gap-3 rounded-md w-full cursor-pointer"
+          style={{
+            padding: sidebarCollapsed ? '10px 0' : '10px 12px',
+            justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+            background: location.pathname === '/account' ? 'rgba(88,166,255,0.1)' : 'transparent',
+            color: location.pathname === '/account' ? 'var(--blue)' : 'var(--text-4)',
+            fontSize: 14,
+            border: 'none',
+          }}
+        >
+          <CircleUserRound size={18} />
+          {!sidebarCollapsed && <span>账户与组织</span>}
+        </button>
         <button
           onClick={() => { navigate('/settings'); onNavigate?.(); }}
           className="flex items-center gap-3 rounded-md w-full cursor-pointer"

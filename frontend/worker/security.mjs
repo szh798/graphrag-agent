@@ -37,6 +37,15 @@ const systemReadRoutes = [
   /^\/api\/v1\/system\/stats$/,
 ]
 
+const accountRoutes = [
+  /^\/api\/v1\/account\/me$/,
+  /^\/api\/v1\/account\/usage$/,
+  /^\/api\/v1\/account\/export$/,
+  /^\/api\/v1\/account\/data$/,
+  /^\/api\/v1\/account\/tenant-data$/,
+  /^\/api\/v1\/ops\/summary$/,
+]
+
 function normalizedPath(pathname) {
   if (pathname.length > 1 && pathname.endsWith('/')) return pathname.slice(0, -1)
   return pathname
@@ -49,6 +58,13 @@ function matchesAny(pathname, patterns) {
 export function classifyApiRequest(method, rawPathname) {
   const normalizedMethod = method.toUpperCase()
   const pathname = normalizedPath(rawPathname)
+
+  if (matchesAny(pathname, accountRoutes)) {
+    if (READ_METHODS.has(normalizedMethod) || normalizedMethod === 'DELETE') {
+      return { action: 'allow' }
+    }
+    return { action: 'deny' }
+  }
 
   if (
     pathname.startsWith('/api/v1/documents') &&
@@ -185,7 +201,7 @@ function shouldStripBackendHeader(name) {
   )
 }
 
-export function buildBackendHeaders(incomingHeaders, visitorId, proxySecret, requestId) {
+export function buildBackendHeaders(incomingHeaders, visitorId, proxySecret, requestId, authorization) {
   const headers = new Headers()
   for (const [name, value] of incomingHeaders) {
     if (!shouldStripBackendHeader(name)) headers.append(name, value)
@@ -194,6 +210,9 @@ export function buildBackendHeaders(incomingHeaders, visitorId, proxySecret, req
   headers.set('X-GraphRAG-Proxy-Secret', proxySecret)
   headers.set('X-GraphRAG-Public-Demo', '1')
   headers.set('X-Request-ID', requestId || crypto.randomUUID())
+  if (authorization && /^Bearer\s+\S+$/i.test(authorization)) {
+    headers.set('Authorization', authorization)
+  }
   return headers
 }
 

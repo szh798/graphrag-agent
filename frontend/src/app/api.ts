@@ -8,6 +8,18 @@ const BASE = import.meta.env.VITE_API_BASE_URL ?? (
   import.meta.env.PROD ? '/api/v1' : 'http://localhost:8000/api/v1'
 );
 
+type AuthTokenProvider = () => Promise<string | null>;
+let authTokenProvider: AuthTokenProvider | null = null;
+
+export function setAuthTokenProvider(provider: AuthTokenProvider | null) {
+  authTokenProvider = provider;
+}
+
+async function authorizationHeader(): Promise<Record<string, string>> {
+  const token = await authTokenProvider?.();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export class ApiError extends Error {
   code: number;
   retryAfterSeconds?: number;
@@ -43,18 +55,22 @@ async function request<T>(
     if (parts.length) url += '?' + parts.join('&');
   }
 
-  const init: RequestInit = { method };
+  const init: RequestInit = { method, headers: await authorizationHeader() };
   if (options.formData) {
     init.body = options.formData;
   } else if (options.body !== undefined) {
-    init.headers = { 'Content-Type': 'application/json' };
+    init.headers = { ...init.headers, 'Content-Type': 'application/json' };
     init.body = JSON.stringify(options.body);
   }
 
   const res = await fetch(url, init);
-  const json = await res.json();
-  if (json.code !== 0) {
-    throw new ApiError(json.code, json.msg ?? 'Unknown error', retryAfterSeconds(res));
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.code !== 0) {
+    throw new ApiError(
+      Number(json.code ?? res.status),
+      json.msg ?? json.detail ?? `Request failed (${res.status})`,
+      retryAfterSeconds(res),
+    );
   }
   return json.data as T;
 }
@@ -63,7 +79,10 @@ const get = <T>(path: string, params?: Record<string, string | number | boolean 
   request<T>('GET', path, { params });
 const post = <T>(path: string, body?: unknown) => request<T>('POST', path, { body });
 const postForm = <T>(path: string, fd: FormData) => request<T>('POST', path, { formData: fd });
-const del = <T>(path: string) => request<T>('DELETE', path);
+const del = <T>(
+  path: string,
+  params?: Record<string, string | number | boolean | undefined | null>,
+) => request<T>('DELETE', path, { params });
 
 // ─── Response Types ───────────────────────────────────────────────────────────
 
@@ -233,6 +252,51 @@ export interface ApiStats {
   total_queries: number;
   active_jobs: number;
   storage_used_mb: number;
+}
+
+export interface ApiAccountIdentity {
+  authenticated: boolean;
+  user_id: string;
+  tenant_id: string;
+  organization_id?: string | null;
+  organization_slug?: string | null;
+  role: string;
+  permissions: string[];
+}
+
+export interface ApiUsageSummary {
+  days: number;
+  scope: 'user' | 'tenant';
+  pricing_configured: boolean;
+  total: {
+    events: number;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+  };
+  breakdown: Array<{
+    operation: string;
+    provider: string;
+    model: string;
+    events: number;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+  }>;
+}
+
+export interface ApiOpsSummary {
+  hours: number;
+  totals: { total: number; errors: number; warnings: number; unique_issues: number };
+  issues: Array<{
+    fingerprint: string;
+    source: string;
+    event_type: string;
+    severity: string;
+    message: string;
+    occurrences: number;
+    last_seen: string;
+  }>;
 }
 
 export interface ApiToolCall {
@@ -459,7 +523,7 @@ export const api = {
   ) => {
     const res = await fetch(`${BASE}/query/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...(await authorizationHeader()), 'Content-Type': 'application/json' },
       body: JSON.stringify({ question, history: toChatHistory(history), session_id: sessionId ?? undefined }),
     });
 
@@ -527,7 +591,23 @@ export const api = {
   cancelBatch: (batchId: string) =>
     del<{ batch_id: string; previous_status: string; status: string; cancel_requested: boolean }>(`/query/batch/${batchId}`),
 
-  // E: Search
+  // E: Account, tenant, usage and operations
+  getAccountMe: () => get<ApiAccountIdentity>('/account/me'),
+
+  getAccountUsage: (days = 30, tenantTotal = false) =>
+    get<ApiUsageSummary>('/account/usage', { days, tenant_total: tenantTotal }),
+
+  exportAccountData: () => get<Record<string, unknown>>('/account/export'),
+
+  deletePersonalData: (userId: string) =>
+    del<{ scope: string; deleted: Record<string, number> }>('/account/data', { confirmation: userId }),
+
+  deleteTenantData: (tenantId: string) =>
+    del<{ scope: string; deleted: Record<string, number> }>('/account/tenant-data', { confirmation: tenantId }),
+
+  getOpsSummary: (hours = 24) => get<ApiOpsSummary>('/ops/summary', { hours }),
+
+  // F: Search
   searchEntities: (q: string, type?: string, limit = 15) =>
     get<ApiSearchResult>('/search/entities', {
       q,
@@ -541,7 +621,7 @@ export const api = {
   searchGraph: (q: string, includeNeighbors = false) =>
     get<ApiGraphSearchResult>('/search/graph', { q, include_neighbors: includeNeighbors }),
 
-  // F: System
+  // G: System
   getHealth: () => get<ApiHealthData>('/health'),
 
   getSystemStats: () => get<ApiStats>('/system/stats'),

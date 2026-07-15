@@ -6,6 +6,7 @@ import { KGExplorer } from './components/pages/KGExplorer';
 import { QAChat } from './components/pages/QAChat';
 import { SearchPage } from './components/pages/SearchPage';
 import { SettingsPage } from './components/pages/SettingsPage';
+import { AccountPage } from './components/pages/AccountPage';
 
 export const router = createBrowserRouter([
   {
@@ -19,6 +20,7 @@ export const router = createBrowserRouter([
       { path: 'chat', Component: QAChat },
       { path: 'search', Component: SearchPage },
       { path: 'settings', Component: SettingsPage },
+      { path: 'account', Component: AccountPage },
     ],
   },
 ]);

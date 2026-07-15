@@ -27,6 +27,12 @@ test('public demo allowlist keeps read surfaces, QA, sessions, and every batch r
     ['GET', '/api/v1/query/batch'],
     ['GET', '/api/v1/query/batch/batch-1'],
     ['DELETE', '/api/v1/query/batch/batch-1'],
+    ['GET', '/api/v1/account/me'],
+    ['GET', '/api/v1/account/usage'],
+    ['GET', '/api/v1/account/export'],
+    ['DELETE', '/api/v1/account/data'],
+    ['DELETE', '/api/v1/account/tenant-data'],
+    ['GET', '/api/v1/ops/summary'],
   ]
 
   for (const [method, pathname] of cases) {
@@ -68,6 +74,8 @@ test('unlisted API endpoints are denied by default', () => {
   assert.equal(classifyApiRequest('GET', '/api/v1/system/demo').action, 'deny')
   assert.equal(classifyApiRequest('PUT', '/api/v1/query').action, 'deny')
   assert.equal(classifyApiRequest('OPTIONS', '/api/v1/query').action, 'deny')
+  assert.equal(classifyApiRequest('POST', '/api/v1/ops/events').action, 'deny')
+  assert.equal(classifyApiRequest('POST', '/api/v1/account/me').action, 'deny')
 })
 
 test('visitor cookie is a raw canonical lowercase UUID and uses safe attributes', () => {
@@ -126,6 +134,33 @@ test('backend headers drop caller identity and overwrite trusted proxy headers',
   assert.equal(headers.get('content-type'), 'application/json')
   assert.equal(headers.get('x-graphrag-visitor-id'), visitorId)
   assert.equal(headers.get('x-graphrag-proxy-secret'), 'server-secret')
+})
+
+test('backend headers forward only the explicitly supplied bearer session', () => {
+  const incoming = new Headers({ Authorization: 'Bearer attacker' })
+  const visitorId = '123e4567-e89b-42d3-a456-426614174000'
+
+  const stripped = buildBackendHeaders(incoming, visitorId, 'server-secret', 'req-1')
+  assert.equal(stripped.get('authorization'), null)
+
+  const forwarded = buildBackendHeaders(
+    incoming,
+    visitorId,
+    'server-secret',
+    'req-2',
+    'Bearer clerk-signed-session',
+  )
+  assert.equal(forwarded.get('authorization'), 'Bearer clerk-signed-session')
+  assert.equal(forwarded.get('x-request-id'), 'req-2')
+
+  const invalid = buildBackendHeaders(
+    incoming,
+    visitorId,
+    'server-secret',
+    'req-3',
+    'Basic not-allowed',
+  )
+  assert.equal(invalid.get('authorization'), null)
 })
 
 test('rate-limit identities are stable and split visitor, IP, and combined dimensions', async () => {

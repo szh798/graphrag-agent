@@ -3,10 +3,10 @@ Pydantic v2 schemas — all API data objects per backend_service_specification-v
 """
 from __future__ import annotations
 
-import uuid
 from typing import Any, Generic, Optional, TypeVar
 
 from pydantic import BaseModel, Field
+from observability import get_request_id
 
 T = TypeVar("T")
 
@@ -18,7 +18,7 @@ T = TypeVar("T")
 class APIResponse(BaseModel, Generic[T]):
     code: int = 0
     msg: str = "success"
-    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    request_id: str = Field(default_factory=get_request_id)
     data: Optional[T] = None
 
     @classmethod

@@ -193,9 +193,17 @@ def run_qa(
     # Extract tool calls and cited node IDs from message history
     tool_calls = []
     cited_node_ids: set[str] = set()
+    usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     step = 0
     all_messages = result.get("messages", [])
     for i, msg in enumerate(all_messages):
+        if isinstance(msg, AIMessage):
+            metadata = getattr(msg, "usage_metadata", None) or {}
+            if not metadata:
+                metadata = (getattr(msg, "response_metadata", None) or {}).get("token_usage", {})
+            usage["input_tokens"] += int(metadata.get("input_tokens", metadata.get("prompt_tokens", 0)) or 0)
+            usage["output_tokens"] += int(metadata.get("output_tokens", metadata.get("completion_tokens", 0)) or 0)
+            usage["total_tokens"] += int(metadata.get("total_tokens", 0) or 0)
         if isinstance(msg, AIMessage) and msg.tool_calls:
             for tc in msg.tool_calls:
                 step += 1
@@ -217,9 +225,13 @@ def run_qa(
                 for node_id in re.findall(r'\bid=([^\s,\)\]]+)', str(output)):
                     cited_node_ids.add(node_id)
 
+    if not usage["total_tokens"]:
+        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+
     return {
         "answer": answer,
         "tool_calls": tool_calls,
         "cited_nodes": list(cited_node_ids),
         "cited_chunks": [chunk.get("chunk_id") for chunk in context_chunks or [] if chunk.get("chunk_id")],
+        "usage": usage,
     }

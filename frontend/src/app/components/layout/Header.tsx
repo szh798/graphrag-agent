@@ -1,9 +1,37 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { Menu, Search, X } from 'lucide-react';
+import { OrganizationSwitcher, SignInButton, UserButton, useAuth } from '@clerk/react';
 import { type KGNode } from '../../store';
 import { api } from '../../api';
+import { useAuthRuntime } from '../../auth';
 import { TYPE_COLORS } from '../../mock-data';
+
+function AccountControls() {
+  const { isLoaded, isSignedIn } = useAuth();
+  if (!isLoaded) return null;
+  return (
+    <div className="flex items-center gap-2" style={{ marginLeft: 'auto' }}>
+      {!isSignedIn && (
+        <SignInButton mode="modal">
+          <button
+            type="button"
+            className="px-3 py-1.5 rounded-md cursor-pointer"
+            style={{ color: 'var(--text-1)', background: 'var(--blue)', border: 0, fontSize: 12, fontWeight: 600 }}
+          >
+            登录
+          </button>
+        </SignInButton>
+      )}
+      {isSignedIn && (
+        <>
+          <OrganizationSwitcher />
+          <UserButton />
+        </>
+      )}
+    </div>
+  );
+}
 
 export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const [query, setQuery] = useState('');
@@ -12,6 +40,7 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const auth = useAuthRuntime();
 
   useEffect(() => {
     if (query.length >= 2) {
@@ -141,6 +170,7 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
           </div>
         )}
       </form>
+      {auth.enabled && <AccountControls />}
     </header>
   );
 }

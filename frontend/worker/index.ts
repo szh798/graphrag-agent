@@ -22,6 +22,7 @@ interface Env {
   DB?: D1Database
   BACKEND_ORIGIN?: string
   BACKEND_PROXY_SECRET?: string
+  CLERK_PUBLISHABLE_KEY?: string
 }
 
 const SITE_ORIGIN_PLACEHOLDER = '__SITE_ORIGIN__'
@@ -36,17 +37,53 @@ function jsonError(
   status: number,
   msg: string,
   headers: HeadersInit = {},
+  requestId = crypto.randomUUID(),
 ): Response {
   const responseHeaders = new Headers(headers)
   responseHeaders.set('Cache-Control', 'no-store')
-
-  const requestId = crypto.randomUUID()
   responseHeaders.set('X-Request-ID', requestId)
 
   return Response.json(
     { code: status, msg, request_id: requestId, data: null },
     { status, headers: responseHeaders },
   )
+}
+
+async function reportEdgeEvent(
+  env: Env,
+  visitorId: string,
+  event: {
+    severity: 'warning' | 'error'
+    eventType: string
+    message: string
+    requestId: string
+    context?: Record<string, string | number | boolean>
+  },
+): Promise<void> {
+  if (!env.BACKEND_ORIGIN || !env.BACKEND_PROXY_SECRET) return
+  const target = new URL('/api/v1/ops/events', env.BACKEND_ORIGIN)
+  try {
+    await fetch(target, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GraphRAG-Proxy-Secret': env.BACKEND_PROXY_SECRET,
+        'X-GraphRAG-Public-Demo': '1',
+        'X-GraphRAG-Visitor-ID': visitorId,
+        'X-Request-ID': event.requestId,
+      },
+      body: JSON.stringify({
+        severity: event.severity,
+        source: 'sites-edge',
+        event_type: event.eventType,
+        message: event.message,
+        request_id: event.requestId,
+        context: event.context ?? {},
+      }),
+    })
+  } catch (error) {
+    console.error('Edge operations event delivery failed', error)
+  }
 }
 
 function withVisitorCookie(
@@ -104,6 +141,7 @@ async function proxyApi(
     visitorId,
     proxySecret,
     requestId,
+    request.headers.get('Authorization'),
   )
 
   const response = sanitizeBackendResponse(
@@ -124,6 +162,7 @@ async function enforcePaidRouteProtection(
   visitorId: string,
   paidScope: string,
   batchId?: string,
+  schedule?: (promise: Promise<unknown>) => void,
 ): Promise<{
   response: Response | null
   lease?: { batchId: string; ownerHash: string }
@@ -201,6 +240,14 @@ async function enforcePaidRouteProtection(
     return { response: null, lease }
   } catch (error) {
     console.error('Public demo protection failed', error)
+    const requestId = crypto.randomUUID()
+    schedule?.(reportEdgeEvent(env, visitorId, {
+      severity: 'error',
+      eventType: 'public_protection_failed',
+      message: error instanceof Error ? error.name : 'Unknown protection error',
+      requestId,
+      context: { paid_scope: paidScope },
+    }))
     if (lease) {
       try {
         await releaseBatchPollLease(env.DB, lease.batchId, lease.ownerHash)
@@ -208,12 +255,12 @@ async function enforcePaidRouteProtection(
         console.error('Batch poll lease release failed', releaseError)
       }
     }
-    return { response: jsonError(503, '在线费用保护服务暂不可用') }
+    return { response: jsonError(503, '在线费用保护服务暂不可用', {}, requestId) }
   }
 }
 
-async function serveSite(request: Request, assets: Fetcher): Promise<Response> {
-  let response = await assets.fetch(request)
+async function serveSite(request: Request, env: Env): Promise<Response> {
+  let response = await env.ASSETS.fetch(request)
 
   // Sites serves the static bundle through ASSETS, but direct SPA routes do
   // not always inherit Wrangler's not_found_handling setting. Fall back to
@@ -226,7 +273,7 @@ async function serveSite(request: Request, assets: Fetcher): Promise<Response> {
 
   if (response.status === 404 && isSpaNavigation) {
     const indexUrl = new URL('/index.html', request.url)
-    response = await assets.fetch(
+    response = await env.ASSETS.fetch(
       new Request(indexUrl, {
         method: request.method,
         headers: request.headers,
@@ -239,7 +286,9 @@ async function serveSite(request: Request, assets: Fetcher): Promise<Response> {
   if (!contentType.includes('text/html')) return response
 
   const origin = new URL(request.url).origin
-  const html = (await response.text()).replaceAll(SITE_ORIGIN_PLACEHOLDER, origin)
+  const html = (await response.text())
+    .replaceAll(SITE_ORIGIN_PLACEHOLDER, origin)
+    .replaceAll('%VITE_CLERK_PUBLISHABLE_KEY%', env.CLERK_PUBLISHABLE_KEY ?? '')
   const headers = new Headers(response.headers)
   headers.delete('content-length')
 
@@ -286,6 +335,7 @@ export default {
           visitor.id,
           decision.paidScope,
           decision.batchId,
+          promise => ctx.waitUntil(promise),
         )
         if (protection.response) {
           return withVisitorCookie(protection.response, visitor, url)
@@ -315,10 +365,28 @@ export default {
             visitor.id,
             env.BACKEND_PROXY_SECRET,
           )
+          if (response.status >= 500) {
+            const requestId = response.headers.get('X-Request-ID') || crypto.randomUUID()
+            ctx.waitUntil(reportEdgeEvent(env, visitor.id, {
+              severity: 'error',
+              eventType: 'backend_upstream_error',
+              message: `Backend returned HTTP ${response.status}`,
+              requestId,
+              context: { status: response.status, path: url.pathname },
+            }))
+          }
         }
       } catch (error) {
         console.error('Backend proxy failed', error)
-        response = jsonError(502, '在线后端暂时不可用')
+        const requestId = crypto.randomUUID()
+        ctx.waitUntil(reportEdgeEvent(env, visitor.id, {
+          severity: 'error',
+          eventType: 'backend_proxy_failed',
+          message: error instanceof Error ? error.name : 'Unknown proxy error',
+          requestId,
+          context: { path: url.pathname },
+        }))
+        response = jsonError(502, '在线后端暂时不可用', {}, requestId)
       } finally {
         if (lease && env.DB) {
           try {
@@ -332,7 +400,7 @@ export default {
       return withVisitorCookie(response, visitor, url)
     }
 
-    response = await serveSite(request, env.ASSETS)
+    response = await serveSite(request, env)
     return withVisitorCookie(response, visitor, url)
   },
 }

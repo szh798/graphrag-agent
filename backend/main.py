@@ -10,13 +10,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 load_dotenv(Path(__file__).parent / ".env", override=False)
 
-from routers import documents, indexing, kg, query, search, system
+from routers import account, documents, indexing, kg, query, search, system
+from models.schemas import APIResponse
 from observability import RequestContextMiddleware
+from operations import report_exception
 from security import ProxyAuthMiddleware
 
 
@@ -71,6 +74,21 @@ app.add_middleware(
 )
 app.add_middleware(RequestContextMiddleware)
 
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    identity = getattr(request.state, "identity", None)
+    report_exception(
+        "unhandled_exception",
+        exc,
+        identity=identity,
+        context={"method": request.method, "path": request.url.path},
+    )
+    return JSONResponse(
+        status_code=500,
+        content=APIResponse.err(5000, "Internal server error").model_dump(),
+    )
+
 # All routers under /api/v1. Each router carries its own sub-prefix.
 # documents.router  prefix="/documents" → /api/v1/documents
 # indexing.router   prefix="/index"     → /api/v1/index
@@ -85,6 +103,7 @@ app.include_router(kg.router,        prefix=PREFIX)
 app.include_router(query.router,     prefix=PREFIX)
 app.include_router(search.router,    prefix=PREFIX)
 app.include_router(system.router,    prefix=PREFIX)
+app.include_router(account.router,   prefix=PREFIX)
 
 
 @app.get("/")

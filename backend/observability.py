@@ -10,11 +10,18 @@ import json
 import logging
 import time
 import uuid
+from contextvars import ContextVar, Token
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
 logger = logging.getLogger("graphrag.access")
+_current_request_id: ContextVar[str | None] = ContextVar("graphrag_request_id", default=None)
+
+
+def get_request_id() -> str:
+    """Return the request-scoped correlation id, generating one off-request."""
+    return _current_request_id.get() or str(uuid.uuid4())
 
 
 def _request_id(scope: Scope) -> str:
@@ -38,6 +45,7 @@ class RequestContextMiddleware:
             return
 
         request_id = _request_id(scope)
+        context_token: Token = _current_request_id.set(request_id)
         started = time.perf_counter()
         status_code = 500
 
@@ -69,3 +77,4 @@ class RequestContextMiddleware:
                     separators=(",", ":"),
                 )
             )
+            _current_request_id.reset(context_token)

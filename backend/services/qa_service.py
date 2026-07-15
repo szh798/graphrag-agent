@@ -10,7 +10,10 @@ from datetime import datetime, timezone
 from storage import app_repository as app_store
 from storage import file_store as fs
 from storage import graph_repository as graph_store
+from storage.account_repository import get_account_repository
 from pipeline.embeddings import embed_text
+from pipeline.llm_config import LLM_MODEL, LLM_PROVIDER
+from observability import get_request_id
 
 
 logger = logging.getLogger(__name__)
@@ -81,7 +84,7 @@ def _question_embedding(question: str, graph_repo) -> list[float] | None:
         return None
 
 
-def create_session(owner_id: str, title: str | None = None) -> dict:
+def create_session(owner_id: str, title: str | None = None, actor_id: str | None = None) -> dict:
     now = _now()
     session = {
         "id": f"s_{uuid.uuid4().hex[:10]}",
@@ -93,6 +96,8 @@ def create_session(owner_id: str, title: str | None = None) -> dict:
         "last_question": "",
         "last_answer": "",
     }
+    if actor_id:
+        session["actor_id"] = actor_id
     app_store.get_app_repository().save_chat_session(session)
     return session
 
@@ -130,6 +135,8 @@ def run_query(
     session_id: str | None = None,
     persist_session: bool = True,
     allowed_document_ids: set[str] | None = None,
+    actor_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict:
     from pipeline.qa_agent import run_qa
 
@@ -190,7 +197,7 @@ def run_query(
     now = _now()
 
     if persist_session and not session:
-        session = create_session(owner_id, _session_title(question))
+        session = create_session(owner_id, _session_title(question), actor_id=actor_id)
 
     record = {
         "id": query_id,
@@ -203,6 +210,8 @@ def run_query(
         "duration_seconds": elapsed,
         "timestamp": now,
     }
+    if actor_id:
+        record["actor_id"] = actor_id
 
     if persist_session and session:
         record["session_id"] = session["id"]
@@ -224,8 +233,41 @@ def run_query(
         record["session"] = _session_summary(session)
 
     app_repo.append_query_history(record)
+
+    if actor_id:
+        usage = result.get("usage") or {}
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        estimated = False
+        if input_tokens <= 0:
+            history_chars = sum(len(str(item.get("content") or item.get("question") or "")) for item in qa_history)
+            input_tokens = max(1, (len(question) + history_chars + 3) // 4)
+            estimated = True
+        if output_tokens <= 0:
+            output_tokens = max(1, (len(str(result.get("answer") or "")) + 3) // 4)
+            estimated = True
+        input_price = float(os.getenv("LLM_INPUT_USD_PER_1M_TOKENS", "0") or 0)
+        output_price = float(os.getenv("LLM_OUTPUT_USD_PER_1M_TOKENS", "0") or 0)
+        cost_microusd = round(input_tokens * input_price + output_tokens * output_price)
+        try:
+            get_account_repository().record_usage(
+                tenant_id=tenant_id or owner_id,
+                user_id=actor_id,
+                operation="qa",
+                provider=LLM_PROVIDER,
+                model=LLM_MODEL,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_microusd=cost_microusd,
+                request_id=get_request_id(),
+                payload={"estimated_tokens": estimated, "duration_seconds": elapsed},
+            )
+        except Exception as exc:
+            logger.error("Usage event persistence failed (%s)", type(exc).__name__)
+
     public_record = dict(record)
     public_record.pop("owner_id", None)
+    public_record.pop("actor_id", None)
     return public_record
 
 
@@ -255,7 +297,7 @@ def get_history(owner_id: str, page: int = 1, page_size: int = 20) -> dict:
         "page": page,
         "page_size": page_size,
         "items": [
-            {key: value for key, value in record.items() if key != "owner_id"}
+            {key: value for key, value in record.items() if key not in {"owner_id", "actor_id"}}
             for record in all_records[start: start + page_size]
         ],
     }
@@ -273,6 +315,8 @@ def _use_background_batch_worker() -> bool:
 def _public_batch_result(meta: dict) -> dict:
     public = dict(meta)
     public.pop("owner_id", None)
+    public.pop("actor_id", None)
+    public.pop("tenant_id", None)
     public.pop("questions", None)
     public.pop("next_index", None)
     return public
@@ -288,7 +332,13 @@ def _save_cancelled_batch(batch_id: str, meta: dict) -> dict:
 
 def _append_batch_result(meta: dict, question: str, owner_id: str) -> None:
     try:
-        res = run_query(question, [], owner_id, persist_session=False)
+        usage_identity = {}
+        if meta.get("actor_id"):
+            usage_identity = {
+                "actor_id": meta["actor_id"],
+                "tenant_id": meta.get("tenant_id") or owner_id,
+            }
+        res = run_query(question, [], owner_id, persist_session=False, **usage_identity)
         meta["results"].append(res)
         meta["completed"] += 1
     except Exception as exc:
@@ -350,12 +400,20 @@ def _process_batch_items(
     return meta
 
 
-def start_batch(questions: list[str], owner_id: str) -> dict:
+def start_batch(
+    questions: list[str],
+    owner_id: str,
+    *,
+    actor_id: str | None = None,
+    tenant_id: str | None = None,
+) -> dict:
     batch_id = f"batch_{uuid.uuid4().hex[:10]}"
     now = datetime.now(timezone.utc).isoformat()
     meta = {
         "batch_id": batch_id,
         "owner_id": owner_id,
+        "actor_id": actor_id,
+        "tenant_id": tenant_id or owner_id,
         "total": len(questions),
         "completed": 0,
         "failed": 0,

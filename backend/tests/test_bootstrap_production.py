@@ -30,20 +30,24 @@ class BootstrapProductionTests(unittest.TestCase):
         app_repo = SchemaRepo("postgres")
         blob_repo = SchemaRepo("vercel_blob")
         queue_repo = SchemaRepo("upstash")
+        account_repo = SchemaRepo("postgres_accounts")
 
         with (
             patch.object(bootstrap.graph_store, "get_graph_repository", return_value=graph_repo),
             patch.object(bootstrap.app_store, "get_app_repository", return_value=app_repo),
             patch.object(bootstrap.blob_store, "get_blob_repository", return_value=blob_repo),
             patch.object(bootstrap.queue_store, "get_queue_repository", return_value=queue_repo),
+            patch.object(bootstrap.account_store, "get_account_repository", return_value=account_repo),
         ):
             result = bootstrap.bootstrap_production(apply_schema=True)
 
         self.assertTrue(graph_repo.schema_applied)
         self.assertTrue(app_repo.schema_applied)
+        self.assertTrue(account_repo.schema_applied)
         self.assertTrue(result["ready"])
         self.assertEqual(result["schema"]["graph_database"], "applied")
         self.assertEqual(result["schema"]["app_database"], "applied")
+        self.assertEqual(result["schema"]["account_database"], "applied")
         self.assertEqual(result["components"]["task_queue"]["backend"], "upstash")
 
 

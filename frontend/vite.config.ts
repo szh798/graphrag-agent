@@ -37,6 +37,10 @@ const localBindingConfig = {
 }
 
 export default defineConfig(async () => {
+  // Vercel's Clerk integration exposes the framework-neutral public key under
+  // NEXT_PUBLIC_*. Mirror it into Vite's public build namespace. Sites may
+  // still provide VITE_CLERK_PUBLISHABLE_KEY directly for its static shell.
+  process.env.VITE_CLERK_PUBLISHABLE_KEY ??= process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
   process.env.WRANGLER_WRITE_LOGS ??= 'false'
   process.env.WRANGLER_LOG_PATH ??= '.wrangler/logs'
   process.env.MINIFLARE_REGISTRY_PATH ??= '.wrangler/registry'
