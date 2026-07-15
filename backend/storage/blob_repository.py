@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -76,20 +77,19 @@ class VercelBlobRepository:
         if not self.token:
             return {"status": "error", **self.profile(), "error": "BLOB_READ_WRITE_TOKEN is not configured"}
         try:
-            import vercel_blob  # noqa: F401
+            from vercel import blob  # noqa: F401
         except ImportError:
-            return {"status": "error", **self.profile(), "error": "Install vercel-blob to use GRAPHRAG_BLOB_BACKEND=vercel_blob"}
+            return {"status": "error", **self.profile(), "error": "Install vercel>=0.7.0 to use GRAPHRAG_BLOB_BACKEND=vercel_blob"}
         return {"status": "ok", **self.profile()}
 
     def _client(self):
         if not self.token:
             raise ValueError("BLOB_READ_WRITE_TOKEN is required when GRAPHRAG_BLOB_BACKEND=vercel_blob")
         try:
-            import vercel_blob
+            from vercel import blob
         except ImportError as exc:
-            raise RuntimeError("Install vercel-blob to use GRAPHRAG_BLOB_BACKEND=vercel_blob") from exc
-        os.environ.setdefault("BLOB_READ_WRITE_TOKEN", self.token)
-        return vercel_blob
+            raise RuntimeError("Install vercel>=0.7.0 to use GRAPHRAG_BLOB_BACKEND=vercel_blob") from exc
+        return blob
 
     def save_upload(self, key: str, content: bytes, content_type: str | None = None) -> dict:
         return self.save_bytes(key, content, content_type)
@@ -98,8 +98,16 @@ class VercelBlobRepository:
         client = self._client()
         put = getattr(client, "put", None)
         if not callable(put):
-            raise RuntimeError("vercel_blob.put is unavailable")
-        result = put(key, content, {"access": os.getenv("BLOB_ACCESS", "private"), "contentType": content_type} if content_type else {"access": os.getenv("BLOB_ACCESS", "private")})
+            raise RuntimeError("vercel.blob.put is unavailable")
+        result = put(
+            key,
+            content,
+            access=os.getenv("BLOB_ACCESS", "private"),
+            content_type=content_type,
+            token=self.token,
+        )
+        if is_dataclass(result):
+            return asdict(result)
         return dict(result) if isinstance(result, dict) else {
             "key": key,
             "pathname": getattr(result, "pathname", key),
@@ -115,14 +123,16 @@ class VercelBlobRepository:
         return json.loads(data.decode("utf-8")) if data else None
 
     def read_bytes(self, blob_ref: dict) -> bytes:
-        import requests
-
         url = blob_ref.get("download_url") or blob_ref.get("downloadUrl") or blob_ref.get("url") or blob_ref.get("key")
         if not url:
             return b""
-        response = requests.get(url, headers={"Authorization": f"Bearer {self.token}"}, timeout=60)
-        response.raise_for_status()
-        return response.content
+        result = self._client().get(
+            url,
+            access=os.getenv("BLOB_ACCESS", "private"),
+            token=self.token,
+            timeout=60,
+        )
+        return bytes(result.content)
 
     def download_to_path(self, blob_ref: dict, target_path: Path) -> Path:
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,12 +141,12 @@ class VercelBlobRepository:
 
     def delete(self, blob_ref: dict | str) -> None:
         client = self._client()
-        delete = getattr(client, "delete", None) or getattr(client, "del_", None) or getattr(client, "del", None)
+        delete = getattr(client, "delete", None)
         if not callable(delete):
             raise RuntimeError("vercel_blob delete function is unavailable")
         value = blob_ref if isinstance(blob_ref, str) else blob_ref.get("url") or blob_ref.get("key")
         if value:
-            delete(value)
+            delete(value, token=self.token)
 
 
 _CACHE_KEY: tuple[str, str] | None = None

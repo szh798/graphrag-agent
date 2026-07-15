@@ -17,6 +17,6 @@ dependencies = [
     "pypdf>=4.0.0",
     "neo4j>=5.23.0",
     "psycopg[binary]>=3.2.0",
-    "vercel-blob>=0.4.2",
+    "vercel>=0.7.0",
     "PyJWT[crypto]>=2.10.0",
 ]
