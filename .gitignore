@@ -8,6 +8,7 @@
 
 # Python
 **/.venv/
+_uv/
 **/__pycache__/
 **/*.py[cod]
 **/.pytest_cache/
@@ -25,6 +26,7 @@ backend/data/
 backend/output/
 .demo-runtime/
 .playwright-cli/
+.webwright/
 *.log
 *.sqlite
 *.sqlite3
@@ -35,3 +37,4 @@ backend/output/
 # OS / editor files
 .DS_Store
 settings.json
+.env*

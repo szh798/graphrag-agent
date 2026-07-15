@@ -129,6 +129,7 @@ def run_query(
     owner_id: str,
     session_id: str | None = None,
     persist_session: bool = True,
+    allowed_document_ids: set[str] | None = None,
 ) -> dict:
     from pipeline.qa_agent import run_qa
 
@@ -139,7 +140,12 @@ def run_query(
         raise ValueError("SESSION_NOT_FOUND")
 
     graph_repo = graph_store.get_graph_repository()
-    kg_export = graph_repo.export_kg()
+    if allowed_document_ids is None:
+        kg_export = graph_repo.export_kg()
+    else:
+        from services import kg_service
+
+        kg_export = kg_service.export_kg(allowed_doc_ids=allowed_document_ids)
     nodes = kg_export.get("nodes", [])
     edges = kg_export.get("edges", [])
 
@@ -154,6 +160,20 @@ def run_query(
         question,
         embedding=embedding,
     )
+    if allowed_document_ids is not None:
+        retrieval["nodes"] = [
+            node for node in retrieval.get("nodes", [])
+            if node.get("source_doc") in allowed_document_ids
+        ]
+        allowed_node_ids = {node.get("id") for node in nodes}
+        retrieval["edges"] = [
+            edge for edge in retrieval.get("edges", [])
+            if edge.get("source") in allowed_node_ids and edge.get("target") in allowed_node_ids
+        ]
+        retrieval["chunks"] = [
+            chunk for chunk in retrieval.get("chunks", [])
+            if chunk.get("doc_id") in allowed_document_ids
+        ]
     context_chunks = retrieval.get("chunks", [])
     if retrieval.get("nodes"):
         known_ids = {node.get("id") for node in nodes}

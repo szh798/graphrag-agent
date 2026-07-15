@@ -29,6 +29,7 @@ async function invoke({
   method = 'GET',
   body,
   fetcher,
+  schedule,
   nowMs = Date.now(),
 }) {
   const response = await handlePublicBatchRequest({
@@ -38,6 +39,7 @@ async function invoke({
     backendOrigin: BACKEND_ORIGIN,
     proxySecret: PROXY_SECRET,
     fetcher,
+    schedule,
     nowMs,
   })
   return { response, payload: await response.json() }
@@ -65,6 +67,7 @@ function backendSuccess(answerFor = question => `answer:${question}`) {
     assert.equal(request.headers.get('x-graphrag-proxy-secret'), PROXY_SECRET)
     assert.equal(request.headers.get('x-graphrag-visitor-id'), VISITOR_A)
     assert.equal(request.headers.get('x-graphrag-stateless-batch'), '1')
+    assert.equal(request.headers.get('x-graphrag-public-demo'), '1')
     assert.deepEqual(body.history, [])
     assert.equal('session_id' in body, false)
     return Response.json({
@@ -206,6 +209,29 @@ test('detail advances exactly one item and strips temporary sessions before D1 p
     nowMs: nowMs + 2,
   })
   assert.equal(backend.calls.length, 2, 'terminal polls must not call the backend')
+})
+
+test('creation can schedule background execution without browser detail polling', async t => {
+  const db = new TestD1Database()
+  t.after(() => db.close())
+  const backend = backendSuccess()
+  const scheduled = []
+
+  const created = await createBatch(db, ['one', 'two', 'three'], {
+    fetcher: backend.fetcher,
+    schedule: promise => scheduled.push(promise),
+  })
+  assert.equal(scheduled.length, 1)
+  await scheduled[0]
+
+  const detail = await invoke({
+    db,
+    path: `/api/v1/query/batch/${created.batch_id}`,
+    fetcher: () => assert.fail('terminal progress reads must not call backend'),
+  })
+  assert.equal(detail.payload.data.status, 'done')
+  assert.equal(detail.payload.data.completed, 3)
+  assert.equal(backend.calls.length, 3)
 })
 
 test('concurrent detail requests share one atomic claim and never double-charge an item', async t => {

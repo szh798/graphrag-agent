@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Outlet } from 'react-router';
 import { Toaster } from 'sonner';
 import { Header } from './Header';
@@ -7,23 +7,39 @@ import { StatusBar } from './StatusBar';
 import { useAppState, AppProvider } from '../../store';
 
 function AppLayoutInner() {
-  const { sidebarCollapsed } = useAppState();
+  const { sidebarCollapsed, setSidebarCollapsed } = useAppState();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  const handleMenuClick = () => {
+    if (window.matchMedia('(max-width: 840px)').matches) {
+      setMobileSidebarOpen(open => !open);
+    } else {
+      setSidebarCollapsed(!sidebarCollapsed);
+    }
+  };
 
   return (
     <div
+      className="app-shell"
       style={{
-        display: 'grid',
-        gridTemplateAreas: '"header header" "sidebar main" "footer footer"',
-        gridTemplateColumns: `${sidebarCollapsed ? 72 : 220}px 1fr`,
-        gridTemplateRows: '56px 1fr 32px',
-        height: '100vh',
-        overflow: 'hidden',
-        transition: 'grid-template-columns 200ms ease',
-      }}
+        '--sidebar-width': `${sidebarCollapsed ? 72 : 220}px`,
+      } as React.CSSProperties}
     >
-      <Header />
-      <Sidebar />
+      <Header onMenuClick={handleMenuClick} />
+      <Sidebar
+        mobileOpen={mobileSidebarOpen}
+        onNavigate={() => setMobileSidebarOpen(false)}
+      />
+      {mobileSidebarOpen && (
+        <button
+          type="button"
+          className="app-sidebar-backdrop"
+          aria-label="关闭导航"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
       <main
+        className="app-main"
         style={{
           gridArea: 'main',
           overflowY: 'auto',

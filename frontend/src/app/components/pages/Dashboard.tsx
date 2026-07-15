@@ -23,9 +23,9 @@ export function Dashboard() {
   const recentDocs = documents.slice(0, 5);
 
   return (
-    <div className="p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
+    <div className="page-shell dashboard-page p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
       {/* Page Title + public demo status */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="page-heading flex items-center justify-between mb-6">
         <h1 style={{ color: 'var(--text-1)', fontSize: 20, fontWeight: 600 }}>仪表盘</h1>
         <span
           className="flex items-center gap-2 px-3 py-1.5 rounded-md"
@@ -36,7 +36,7 @@ export function Dashboard() {
       </div>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6" style={{ minWidth: 0 }}>
+      <div className="dashboard-stats grid grid-cols-4 gap-4 mb-6" style={{ minWidth: 0 }}>
         {statCards.map(c => (
           <div
             key={c.key}
@@ -54,7 +54,7 @@ export function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="dashboard-content grid grid-cols-3 gap-4">
         {/* System Health */}
         <div
           className="rounded-lg p-4 col-span-1"
@@ -66,7 +66,7 @@ export function Dashboard() {
               { name: 'MinerU venv', status: health.mineru },
               { name: 'LangExtract venv', status: health.langextract },
               { name: 'LLM API', status: health.deepseek },
-              { name: 'Storage', status: health.storage },
+              { name: 'Blob Storage', status: health.storage },
             ].map(s => (
               <div key={s.name} className="flex items-center justify-between">
                 <span style={{ color: 'var(--text-2)', fontSize: 13 }}>{s.name}</span>

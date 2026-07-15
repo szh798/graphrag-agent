@@ -11,7 +11,7 @@ const navItems = [
   { icon: Search, label: '搜索', path: '/search', badge: null },
 ];
 
-export function Sidebar() {
+export function Sidebar({ mobileOpen = false, onNavigate }: { mobileOpen?: boolean; onNavigate?: () => void }) {
   const { sidebarCollapsed, stats } = useAppState();
   const navigate = useNavigate();
   const location = useLocation();
@@ -20,7 +20,7 @@ export function Sidebar() {
 
   return (
     <nav
-      className="flex flex-col py-3 overflow-hidden"
+      className={`app-sidebar flex flex-col py-3 overflow-hidden${mobileOpen ? ' is-mobile-open' : ''}`}
       style={{
         gridArea: 'sidebar',
         width,
@@ -39,7 +39,7 @@ export function Sidebar() {
           return (
             <button
               key={item.path}
-              onClick={() => navigate(item.path)}
+              onClick={() => { navigate(item.path); onNavigate?.(); }}
               className="flex items-center gap-3 rounded-md cursor-pointer relative"
               style={{
                 padding: sidebarCollapsed ? '10px 0' : '10px 12px',
@@ -91,7 +91,7 @@ export function Sidebar() {
 
       <div className="mt-auto px-2">
         <button
-          onClick={() => navigate('/settings')}
+          onClick={() => { navigate('/settings'); onNavigate?.(); }}
           className="flex items-center gap-3 rounded-md w-full cursor-pointer"
           style={{
             padding: sidebarCollapsed ? '10px 0' : '10px 12px',

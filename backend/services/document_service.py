@@ -4,6 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from storage import app_repository as app_store
 from storage import blob_repository as blob_store
@@ -120,16 +121,40 @@ def validate_upload_content(
 def save_upload(filename: str, content: bytes, language: str = "ch",
                 enable_formula: bool = True, enable_table: bool = True) -> dict:
     doc_id = uuid.uuid4().hex[:8]
-    ext = Path(filename).suffix.lower().lstrip(".")
     upload_filename = f"{doc_id}_{filename}"
     blob_ref = blob_store.get_blob_repository().save_upload(upload_filename, content)
+    return _save_document_record(
+        doc_id=doc_id,
+        filename=filename,
+        size_bytes=len(content),
+        language=language,
+        enable_formula=enable_formula,
+        enable_table=enable_table,
+        upload_filename=upload_filename,
+        blob_ref=blob_ref,
+    )
+
+
+def _save_document_record(
+    *,
+    doc_id: str,
+    filename: str,
+    size_bytes: int,
+    language: str,
+    enable_formula: bool,
+    enable_table: bool,
+    upload_filename: str,
+    blob_ref: dict,
+    content_type: str | None = None,
+) -> dict:
+    ext = Path(filename).suffix.lower().lstrip(".")
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
     doc = {
         "doc_id": doc_id,
         "filename": filename,
         "format": ext,
-        "size_bytes": len(content),
+        "size_bytes": size_bytes,
         "pages": None,
         "uploaded_at": uploaded_at,
         "upload_date": uploaded_at,
@@ -141,9 +166,56 @@ def save_upload(filename: str, content: bytes, language: str = "ch",
         "blob_key": blob_ref.get("key") or blob_ref.get("pathname") or upload_filename,
         "blob_url": blob_ref.get("url", ""),
         "blob_ref": blob_ref,
+        "content_type": content_type or blob_ref.get("contentType") or blob_ref.get("content_type"),
     }
     app_store.get_app_repository().save_document(doc)
     return doc
+
+
+def register_direct_upload(
+    filename: str,
+    size_bytes: int,
+    content_type: str | None,
+    blob_ref: dict,
+    language: str = "ch",
+    enable_formula: bool = True,
+    enable_table: bool = True,
+) -> dict:
+    """Register a browser-to-Blob upload after Vercel confirms completion."""
+    ok, code, message = validate_upload(filename, size_bytes)
+    if not ok:
+        raise ValueError(f"{code}:{message}")
+
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    ext = Path(filename).suffix.lower().lstrip(".")
+    if mime not in _GENERIC_MIME_TYPES and mime not in _ALLOWED_MIME_TYPES.get(ext, set()):
+        raise ValueError("1002:File content type does not match filename")
+
+    url = str(blob_ref.get("url") or "")
+    download_url = str(blob_ref.get("downloadUrl") or blob_ref.get("download_url") or "")
+    pathname = str(blob_ref.get("pathname") or "")
+    parsed = urlparse(url or download_url)
+    if parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(".blob.vercel-storage.com"):
+        raise ValueError("1001:Invalid Blob storage URL")
+    if not pathname.startswith("uploads/") or ".." in Path(pathname).parts:
+        raise ValueError("1001:Invalid Blob pathname")
+
+    normalized_blob = dict(blob_ref)
+    normalized_blob["key"] = pathname
+    normalized_blob["download_url"] = download_url
+    normalized_blob["content_type"] = mime
+    doc_id = uuid.uuid4().hex[:8]
+    return _save_document_record(
+        doc_id=doc_id,
+        filename=filename,
+        size_bytes=size_bytes,
+        language=language,
+        enable_formula=enable_formula,
+        enable_table=enable_table,
+        upload_filename=pathname,
+        blob_ref=normalized_blob,
+        content_type=mime,
+    )
 
 
 def get_document(doc_id: str) -> dict | None:

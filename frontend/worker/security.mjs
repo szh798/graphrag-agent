@@ -185,13 +185,15 @@ function shouldStripBackendHeader(name) {
   )
 }
 
-export function buildBackendHeaders(incomingHeaders, visitorId, proxySecret) {
+export function buildBackendHeaders(incomingHeaders, visitorId, proxySecret, requestId) {
   const headers = new Headers()
   for (const [name, value] of incomingHeaders) {
     if (!shouldStripBackendHeader(name)) headers.append(name, value)
   }
   headers.set('X-GraphRAG-Visitor-ID', visitorId)
   headers.set('X-GraphRAG-Proxy-Secret', proxySecret)
+  headers.set('X-GraphRAG-Public-Demo', '1')
+  headers.set('X-Request-ID', requestId || crypto.randomUUID())
   return headers
 }
 

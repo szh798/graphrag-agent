@@ -40,8 +40,11 @@ function jsonError(
   const responseHeaders = new Headers(headers)
   responseHeaders.set('Cache-Control', 'no-store')
 
+  const requestId = crypto.randomUUID()
+  responseHeaders.set('X-Request-ID', requestId)
+
   return Response.json(
-    { code: status, msg, request_id: crypto.randomUUID(), data: null },
+    { code: status, msg, request_id: requestId, data: null },
     { status, headers: responseHeaders },
   )
 }
@@ -95,11 +98,24 @@ async function proxyApi(
     backendOrigin.endsWith('/') ? backendOrigin : `${backendOrigin}/`,
   )
   const forwarded = new Request(targetUrl, request)
-  const headers = buildBackendHeaders(request.headers, visitorId, proxySecret)
+  const requestId = request.headers.get('X-Request-ID') || crypto.randomUUID()
+  const headers = buildBackendHeaders(
+    request.headers,
+    visitorId,
+    proxySecret,
+    requestId,
+  )
 
-  return sanitizeBackendResponse(
+  const response = sanitizeBackendResponse(
     await fetch(new Request(forwarded, { headers, redirect: 'manual' })),
   )
+  const responseHeaders = new Headers(response.headers)
+  responseHeaders.set('X-Request-ID', requestId)
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
+  })
 }
 
 async function enforcePaidRouteProtection(
@@ -235,7 +251,7 @@ async function serveSite(request: Request, assets: Fetcher): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
     const visitor = getOrCreateVisitor(request.headers)
     let response: Response
@@ -289,6 +305,7 @@ export default {
                 visitorId: visitor.id,
                 backendOrigin: env.BACKEND_ORIGIN,
                 proxySecret: env.BACKEND_PROXY_SECRET,
+                schedule: promise => ctx.waitUntil(promise),
               })) ?? jsonError(404, '该 API 在公开演示中不可用')
           }
         } else {

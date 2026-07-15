@@ -391,10 +391,10 @@ export function QAChat() {
   const batchStatus = batchResult ? getBatchStatusMeta(batchResult.status) : null;
 
   return (
-    <div className="flex h-full" style={{ background: 'var(--bg-base)' }}>
+    <div className="chat-shell flex h-full" style={{ background: 'var(--bg-base)' }}>
       {/* History Sidebar */}
       <div
-        className="flex flex-col"
+        className="chat-history flex flex-col"
         style={{ width: 240, background: 'var(--bg-s1)', borderRight: '1px solid var(--border-main)', flexShrink: 0 }}
       >
         <div className="p-3">
@@ -449,9 +449,9 @@ export function QAChat() {
       </div>
 
       {/* Chat Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="chat-content flex-1 flex flex-col">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="chat-messages flex-1 overflow-y-auto p-6">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-4">
               <div style={{ fontSize: 32 }}>
@@ -461,7 +461,7 @@ export function QAChat() {
               <p style={{ color: 'var(--text-3)', fontSize: 14, textAlign: 'center', maxWidth: 500 }}>
                 向知识图谱提问。我将使用多步推理从已索引的文档中为您找到准确答案。
               </p>
-              <div className="grid grid-cols-2 gap-3 mt-4" style={{ maxWidth: 600, width: '100%' }}>
+              <div className="chat-prompts grid grid-cols-2 gap-3 mt-4" style={{ maxWidth: 600, width: '100%' }}>
                 {suggestedPrompts.map((p, i) => (
                   <button
                     key={i}

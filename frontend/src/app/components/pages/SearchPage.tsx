@@ -113,7 +113,7 @@ export function SearchPage() {
         .attr('x2', (d: any) => d.target.x).attr('y2', (d: any) => d.target.y);
       node.attr('cx', (d: any) => d.x).attr('cy', (d: any) => d.y);
     });
-    return () => simulation.stop();
+    return () => { simulation.stop(); };
   }, [selectedResult, getNeighbors]);
 
   // ── Path Search ───────────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ export function SearchPage() {
   };
 
   return (
-    <div className="p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
+    <div className="page-shell search-page p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
       <h1 className="mb-6" style={{ color: 'var(--text-1)', fontSize: 20, fontWeight: 600 }}>搜索</h1>
 
       {/* Search Header */}
@@ -283,7 +283,7 @@ export function SearchPage() {
 
       {/* Entity Search Tab */}
       {activeTab === 'entity' && (
-        <div className="flex gap-4">
+        <div className="search-results-layout flex gap-4">
           <div className="flex-1" style={{ minWidth: 0 }}>
             {!hasSearched ? (
               <div className="flex flex-col items-center justify-center py-16 gap-3">
@@ -359,7 +359,7 @@ export function SearchPage() {
           {/* Preview Graph */}
           {selectedResult && (
             <div
-              className="rounded-lg p-3 flex-shrink-0"
+              className="search-preview-panel rounded-lg p-3 flex-shrink-0"
               style={{ width: 400, background: 'var(--bg-s1)', border: '1px solid var(--border-main)' }}
             >
               <div className="flex items-center justify-between mb-2">

@@ -1,9 +1,13 @@
 {
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist/client",
-  "installCommand": "cd frontend && npm ci --legacy-peer-deps",
+  "installCommand": "npm ci && npm --prefix frontend ci --legacy-peer-deps",
   "framework": "vite",
   "rewrites": [
+    {
+      "source": "/api/v1/documents/upload/direct",
+      "destination": "/api/blob-upload"
+    },
     {
       "source": "/api/v1/(.*)",
       "destination": "/api/index"

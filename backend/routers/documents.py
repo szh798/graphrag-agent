@@ -1,14 +1,35 @@
 """A 组：文档管理（4 个端点）"""
 from io import BytesIO
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from models.schemas import APIResponse
+from public_access import PUBLIC_DEMO_HEADER, document_is_visible, public_document_ids
 from services import document_service as svc
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+class DirectUploadBlob(BaseModel):
+    url: str
+    downloadUrl: str | None = None
+    pathname: str
+    contentType: str | None = None
+    contentDisposition: str | None = None
+    etag: str | None = None
+
+
+class CompleteDirectUploadRequest(BaseModel):
+    filename: str
+    sizeBytes: int = Field(gt=0, le=svc.MAX_FILE_SIZE_BYTES)
+    contentType: str | None = None
+    language: str = "ch"
+    enableFormula: bool = True
+    enableTable: bool = True
+    blob: DirectUploadBlob
 
 
 def _upload_error(code: int, message: str) -> JSONResponse:
@@ -74,10 +95,41 @@ async def upload_document(
     return APIResponse.ok(svc.public_document(doc))
 
 
+@router.post("/upload/complete", status_code=201)
+async def complete_direct_upload(
+    body: CompleteDirectUploadRequest,
+    internal_upload: str = Header("", alias="X-GraphRAG-Internal-Upload"),
+):
+    if internal_upload != "1":
+        return JSONResponse(
+            status_code=401,
+            content=APIResponse.err(4001, "Unauthorized upload completion").model_dump(),
+        )
+    try:
+        doc = svc.register_direct_upload(
+            filename=body.filename,
+            size_bytes=body.sizeBytes,
+            content_type=body.contentType,
+            blob_ref=body.blob.model_dump(exclude_none=True),
+            language=body.language,
+            enable_formula=body.enableFormula,
+            enable_table=body.enableTable,
+        )
+    except ValueError as exc:
+        raw = str(exc)
+        code_text, _, message = raw.partition(":")
+        code = int(code_text) if code_text.isdigit() else 1001
+        return _upload_error(code, message or "Invalid completed upload")
+    return APIResponse.ok(svc.public_document(doc))
+
+
 @router.get("/{doc_id}")
-async def get_document(doc_id: str):
+async def get_document(
+    doc_id: str,
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+):
     doc = svc.get_document(doc_id)
-    if not doc:
+    if not doc or not document_is_visible(doc_id, public_document_ids(public_demo)):
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
@@ -86,9 +138,12 @@ async def get_document(doc_id: str):
 
 
 @router.get("/{doc_id}/index-result")
-async def get_document_index_result(doc_id: str):
+async def get_document_index_result(
+    doc_id: str,
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+):
     doc = svc.get_document(doc_id)
-    if not doc:
+    if not doc or not document_is_visible(doc_id, public_document_ids(public_demo)):
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
@@ -103,9 +158,14 @@ async def get_document_index_result(doc_id: str):
 
 
 @router.get("/{doc_id}/extractions")
-async def get_document_extractions(doc_id: str, page: int = 1, page_size: int = 50):
+async def get_document_extractions(
+    doc_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+):
     doc = svc.get_document(doc_id)
-    if not doc:
+    if not doc or not document_is_visible(doc_id, public_document_ids(public_demo)):
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
@@ -125,9 +185,14 @@ async def list_documents(
     page_size: int = 20,
     status: str | None = None,
     format: str | None = None,
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
 ):
     page_size = min(page_size, 100)
     result = svc.list_documents(page, page_size, status, format)
+    allowed_ids = public_document_ids(public_demo)
+    if allowed_ids is not None:
+        result["items"] = [item for item in result["items"] if item.get("doc_id") in allowed_ids]
+        result["total"] = len(result["items"])
     return APIResponse.ok(result)
 
 

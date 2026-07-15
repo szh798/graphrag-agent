@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from storage import app_repository as app_store
 from storage import blob_repository as blob_store
 from storage import file_store as fs
+from services import document_service
 from services.document_service import update_doc_status
 from services.mineru_cloud_client import MinerUCloudClient
 from services import local_parser
@@ -161,7 +162,21 @@ def _job_input_path(job_id: str, doc: dict, fallback_path: Path) -> Path:
     if blob_ref:
         suffix = Path(doc.get("filename", "input")).suffix
         target = fs.job_dir(job_id) / "input" / f"{doc['doc_id']}{suffix}"
-        return blob_store.get_blob_repository().download_to_path(blob_ref, target)
+        downloaded = blob_store.get_blob_repository().download_to_path(blob_ref, target)
+        size_bytes = downloaded.stat().st_size
+        head = downloaded.read_bytes()[:4096]
+        ok, _, message = document_service.validate_upload(doc.get("filename", ""), size_bytes)
+        if ok:
+            ok, _, message = document_service.validate_upload_content(
+                doc.get("filename", ""),
+                doc.get("content_type"),
+                head,
+                size_bytes,
+            )
+        if not ok:
+            downloaded.unlink(missing_ok=True)
+            raise ValueError(f"Downloaded upload validation failed: {message}")
+        return downloaded
     return fallback_path
 
 

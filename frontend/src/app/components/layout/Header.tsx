@@ -1,18 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { Menu, Search, X } from 'lucide-react';
-import { useAppState, type KGNode } from '../../store';
+import { type KGNode } from '../../store';
 import { api } from '../../api';
 import { TYPE_COLORS } from '../../mock-data';
 
-export function Header() {
-  const { sidebarCollapsed, setSidebarCollapsed } = useAppState();
+export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const [query, setQuery] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<KGNode[]>([]);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     if (query.length >= 2) {
@@ -23,7 +22,7 @@ export function Header() {
           setSuggestions(res.items.map(n => ({
             id: n.id, name: n.name, type: n.type as KGNode['type'],
             page: n.page, confidence: n.confidence as KGNode['confidence'],
-            degree: n.degree, centrality: 0, doc_id: n.doc_id,
+            degree: n.degree, centrality: 0, doc_id: n.source_doc,
           })));
           setShowSuggestions(true);
         } catch {
@@ -47,7 +46,7 @@ export function Header() {
 
   return (
     <header
-      className="flex items-center px-4 gap-4"
+      className="app-header flex items-center px-4 gap-4"
       style={{
         gridArea: 'header',
         height: 56,
@@ -60,18 +59,18 @@ export function Header() {
     >
       {/* Left */}
       <button
-        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+        onClick={onMenuClick}
         className="p-1.5 rounded-md hover:opacity-80 cursor-pointer"
         style={{ background: 'var(--bg-s2)', color: 'var(--text-3)' }}
-        aria-label="Toggle sidebar"
+        aria-label="打开或收起导航"
       >
         <Menu size={18} />
       </button>
-      <span style={{ color: 'var(--blue)', fontSize: 16, fontWeight: 600, whiteSpace: 'nowrap' }}>
+      <span className="app-brand" style={{ color: 'var(--blue)', fontSize: 16, fontWeight: 600, whiteSpace: 'nowrap' }}>
         GraphRAG Studio
       </span>
       <span
-        className="px-2 py-0.5 rounded-full"
+        className="app-demo-badge px-2 py-0.5 rounded-full"
         style={{
           color: 'var(--green)',
           background: 'rgba(63,185,80,0.1)',
@@ -85,7 +84,7 @@ export function Header() {
       </span>
 
       {/* Center - Search */}
-      <form onSubmit={handleSubmit} className="flex-1 flex justify-center relative" style={{ maxWidth: 400, margin: '0 auto' }}>
+      <form onSubmit={handleSubmit} className="app-global-search flex-1 flex justify-center relative" style={{ maxWidth: 400, margin: '0 auto' }}>
         <div className="relative w-full">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-4)' }} />
           <input

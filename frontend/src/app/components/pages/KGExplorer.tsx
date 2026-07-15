@@ -15,8 +15,8 @@ export function KGExplorer() {
   const [searchParams] = useSearchParams();
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const simulationRef = useRef<d3.Simulation<any, any>>();
-  const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown>>();
+  const simulationRef = useRef<d3.Simulation<any, any> | null>(null);
+  const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
 
   const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set(ENTITY_TYPES));
   const [filterConfidence, setFilterConfidence] = useState<Set<string>>(new Set(CONFIDENCE_LEVELS));
@@ -122,7 +122,7 @@ export function KGExplorer() {
       .on('click', (_, d: any) => {
         focusNode(d, false);
       })
-      .call(d3.drag<SVGCircleElement, any>()
+      .call((d3.drag<SVGCircleElement, any>()
         .on('start', (event, d: any) => {
           if (!event.active) simulation.alphaTarget(0.3).restart();
           d.fx = d.x; d.fy = d.y;
@@ -130,8 +130,7 @@ export function KGExplorer() {
         .on('drag', (event, d: any) => { d.fx = event.x; d.fy = event.y; })
         .on('end', (event, d: any) => {
           if (!event.active) simulation.alphaTarget(0);
-        })
-      );
+        })) as any);
 
     // Labels for high-degree nodes
     const label = g.append('g')
@@ -376,7 +375,7 @@ export function KGExplorer() {
   };
 
   return (
-    <div className="flex h-full" style={{ background: 'var(--bg-base)' }}>
+    <div className="graph-page flex h-full" style={{ background: 'var(--bg-base)' }}>
       {/* Filter Panel */}
       {showFilter && (
         <div

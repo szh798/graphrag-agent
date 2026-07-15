@@ -78,7 +78,7 @@ export function Documents() {
   }, []);
 
   return (
-    <div className="p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
+    <div className="page-shell documents-page p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
       <h1 className="mb-4" style={{ color: 'var(--text-1)', fontSize: 20, fontWeight: 600 }}>文档浏览</h1>
 
       <div
@@ -95,7 +95,7 @@ export function Documents() {
       </div>
 
       {/* Toolbar */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="documents-toolbar flex items-center gap-3 mb-4">
         <select
           value={formatFilter}
           onChange={e => setFormatFilter(e.target.value)}
@@ -132,7 +132,7 @@ export function Documents() {
       </div>
 
       {/* Document Table */}
-      <div className="rounded-lg overflow-hidden" style={{ background: 'var(--bg-s1)', border: '1px solid var(--border-main)' }}>
+      <div className="documents-table rounded-lg overflow-auto" style={{ background: 'var(--bg-s1)', border: '1px solid var(--border-main)' }}>
         {/* Header */}
         <div
           className="grid gap-4 px-4 py-2.5"

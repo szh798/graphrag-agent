@@ -8,7 +8,7 @@ export function StatusBar() {
 
   return (
     <footer
-      className="flex items-center justify-between px-4"
+      className="app-statusbar flex items-center justify-between px-4"
       style={{
         gridArea: 'footer',
         height: 32,

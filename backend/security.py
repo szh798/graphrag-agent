@@ -30,13 +30,18 @@ def _is_protected_api_path(path: str) -> bool:
     return is_api_path and normalized not in _PUBLIC_API_PATHS
 
 
-def _error_response(status_code: int, code: int, message: str) -> JSONResponse:
+def _error_response(
+    status_code: int,
+    code: int,
+    message: str,
+    request_id: str | None = None,
+) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={
             "code": code,
             "msg": message,
-            "request_id": str(uuid.uuid4()),
+            "request_id": request_id or str(uuid.uuid4()),
             "data": None,
         },
     )
@@ -77,9 +82,11 @@ class ProxyAuthMiddleware:
             await response(scope, receive, send)
             return
 
-        supplied_secret = Headers(scope=scope).get(PROXY_SECRET_HEADER, "")
+        request_headers = Headers(scope=scope)
+        request_id = request_headers.get("x-request-id", "") or None
+        supplied_secret = request_headers.get(PROXY_SECRET_HEADER, "")
         if not supplied_secret or not hmac.compare_digest(supplied_secret, self.secret):
-            response = _error_response(401, 4001, "Unauthorized")
+            response = _error_response(401, 4001, "Unauthorized", request_id)
             await response(scope, receive, send)
             return
 

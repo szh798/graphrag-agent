@@ -33,6 +33,157 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
+.app-shell {
+  display: grid;
+  grid-template-areas: "header header" "sidebar main" "footer footer";
+  grid-template-columns: var(--sidebar-width, 220px) minmax(0, 1fr);
+  grid-template-rows: 56px minmax(0, 1fr) 32px;
+  height: 100dvh;
+  overflow: hidden;
+  transition: grid-template-columns 200ms ease;
+}
+
+.app-sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 840px) {
+  .app-shell {
+    grid-template-areas: "header" "main" "footer";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 56px minmax(0, 1fr) 28px;
+  }
+
+  .app-sidebar {
+    position: fixed;
+    inset: 56px auto 28px 0;
+    z-index: 310;
+    width: min(82vw, 280px) !important;
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .app-sidebar.is-mobile-open {
+    transform: translateX(0);
+  }
+
+  .app-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 56px 0 28px;
+    z-index: 300;
+    border: 0;
+    background: rgba(1, 4, 9, 0.72);
+  }
+
+  .app-header {
+    padding-inline: 12px !important;
+    gap: 10px !important;
+  }
+
+  .app-global-search {
+    display: none !important;
+  }
+
+  .app-brand {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .app-demo-badge {
+    margin-left: auto;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .app-statusbar {
+    padding-inline: 10px !important;
+    height: 28px !important;
+  }
+
+  .app-statusbar > div:first-child,
+  .app-statusbar span:first-child {
+    display: none;
+  }
+
+  .page-shell {
+    padding: 16px !important;
+  }
+
+  .page-heading {
+    align-items: flex-start !important;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .dashboard-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .dashboard-content,
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .documents-toolbar {
+    align-items: stretch !important;
+    flex-wrap: wrap;
+  }
+
+  .documents-toolbar input {
+    flex-basis: 100%;
+  }
+
+  .documents-table > * {
+    min-width: 760px;
+  }
+
+  .chat-history {
+    display: none !important;
+  }
+
+  .chat-content,
+  .chat-messages {
+    min-width: 0;
+  }
+
+  .chat-messages {
+    padding: 16px !important;
+  }
+
+  .chat-prompts {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .search-results-layout {
+    flex-direction: column;
+  }
+
+  .search-preview-panel {
+    width: 100% !important;
+  }
+
+  .graph-page > :first-child {
+    display: none !important;
+  }
+
+  .graph-page > :last-child {
+    width: min(82vw, 300px) !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-demo-badge {
+    display: none;
+  }
+
+  .dashboard-stats {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
 /* Skeleton shimmer */
 @keyframes shimmer {
   0% { background-position: 200% 0; }

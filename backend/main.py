@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv(Path(__file__).parent / ".env", override=False)
 
 from routers import documents, indexing, kg, query, search, system
+from observability import RequestContextMiddleware
 from security import ProxyAuthMiddleware
 
 
@@ -68,6 +69,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestContextMiddleware)
 
 # All routers under /api/v1. Each router carries its own sub-prefix.
 # documents.router  prefix="/documents" → /api/v1/documents

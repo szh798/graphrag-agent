@@ -86,6 +86,45 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(upload.reads, 2)
         self.assertTrue(upload.closed)
 
+    def test_completed_direct_upload_registers_private_blob_without_file_bytes(self):
+        from services import document_service as svc
+
+        saved = []
+
+        class FakeRepo:
+            def save_document(self, doc):
+                saved.append(doc)
+
+        with patch.object(svc.app_store, "get_app_repository", return_value=FakeRepo()):
+            doc = svc.register_direct_upload(
+                filename="large.pdf",
+                size_bytes=200 * 1024 * 1024,
+                content_type="application/pdf",
+                blob_ref={
+                    "url": "https://store.private.blob.vercel-storage.com/uploads/large-random.pdf",
+                    "downloadUrl": "https://store.private.blob.vercel-storage.com/uploads/large-random.pdf?download=1",
+                    "pathname": "uploads/large-random.pdf",
+                },
+            )
+
+        self.assertEqual(doc["size_bytes"], 200 * 1024 * 1024)
+        self.assertEqual(doc["blob_key"], "uploads/large-random.pdf")
+        self.assertEqual(saved[0]["doc_id"], doc["doc_id"])
+
+    def test_completed_direct_upload_rejects_untrusted_blob_host(self):
+        from services import document_service as svc
+
+        with self.assertRaisesRegex(ValueError, "Invalid Blob storage URL"):
+            svc.register_direct_upload(
+                filename="demo.pdf",
+                size_bytes=128,
+                content_type="application/pdf",
+                blob_ref={
+                    "url": "https://attacker.example/uploads/demo.pdf",
+                    "pathname": "uploads/demo.pdf",
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

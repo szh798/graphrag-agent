@@ -3,6 +3,10 @@ API integration tests — tests all major endpoints against a running server.
 Run with: python tests/test_api.py
 Server must be running on http://localhost:8000
 """
+# This file is an executable live-server smoke suite, not an isolated pytest
+# module. Keep it runnable directly while preventing accidental collection.
+__test__ = False
+
 import json
 import sys
 import time

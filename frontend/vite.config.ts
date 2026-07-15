@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import path from 'path'
+import { fileURLToPath } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import hostingConfig from './.openai/hosting.json'
@@ -13,7 +14,7 @@ const localBindingConfig = {
   compatibility_flags: ['nodejs_compat'],
   assets: {
     binding: 'ASSETS',
-    not_found_handling: 'single-page-application',
+    not_found_handling: 'single-page-application' as const,
     run_worker_first: true,
   },
   d1_databases: d1
@@ -57,7 +58,7 @@ export default defineConfig(async () => {
     resolve: {
       alias: {
         // Alias @ to the src directory
-        '@': path.resolve(__dirname, './src'),
+        '@': path.resolve(fileURLToPath(new URL('.', import.meta.url)), './src'),
       },
     },
 

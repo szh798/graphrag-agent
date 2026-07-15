@@ -139,12 +139,14 @@ export function matchPublicBatchRoute(method, rawPathname) {
 
 function apiResponse(data, status = 200, extraHeaders = {}) {
   const headers = new Headers(extraHeaders)
+  const requestId = crypto.randomUUID()
   headers.set('Cache-Control', 'no-store')
+  headers.set('X-Request-ID', requestId)
   return Response.json(
     {
       code: 0,
       msg: 'success',
-      request_id: crypto.randomUUID(),
+      request_id: requestId,
       data,
     },
     { status, headers },
@@ -153,12 +155,14 @@ function apiResponse(data, status = 200, extraHeaders = {}) {
 
 function apiError(httpStatus, code, msg, extraHeaders = {}) {
   const headers = new Headers(extraHeaders)
+  const requestId = crypto.randomUUID()
   headers.set('Cache-Control', 'no-store')
+  headers.set('X-Request-ID', requestId)
   return Response.json(
     {
       code,
       msg,
-      request_id: crypto.randomUUID(),
+      request_id: requestId,
       data: null,
     },
     { status: httpStatus, headers },
@@ -497,6 +501,7 @@ async function callBackendQuery(
   fetcher,
 ) {
   const target = new URL('/api/v1/query', backendOrigin)
+  const requestId = crypto.randomUUID()
   const response = await fetcher(
     new Request(target, {
       method: 'POST',
@@ -506,6 +511,8 @@ async function callBackendQuery(
         'X-GraphRAG-Visitor-ID': visitorId,
         'X-GraphRAG-Proxy-Secret': proxySecret,
         'X-GraphRAG-Stateless-Batch': '1',
+        'X-GraphRAG-Public-Demo': '1',
+        'X-Request-ID': requestId,
       },
       body: JSON.stringify({ question: claimed.question, history: [] }),
     }),
@@ -594,6 +601,39 @@ async function getBatchDetail(
   return apiResponse(await batchSnapshot(db, batchId, visitorId))
 }
 
+async function runBatchInBackground(
+  db,
+  batchId,
+  visitorId,
+  backendOrigin,
+  proxySecret,
+  fetcher,
+) {
+  // D1 is the source of truth and every item is atomically claimed. If the
+  // edge runtime stops this task early, ordinary detail polling safely resumes
+  // from the next pending item without replaying an uncertain claim.
+  for (;;) {
+    const batch = await loadOwnedBatch(db, batchId, visitorId)
+    if (!batch || batch.status === 'done' || batch.status === 'cancelled') return
+    const previousFinished = numberValue(batch.completed) + numberValue(batch.failed)
+
+    await getBatchDetail(
+      db,
+      batchId,
+      visitorId,
+      Date.now(),
+      backendOrigin,
+      proxySecret,
+      fetcher,
+    )
+
+    const latest = await loadOwnedBatch(db, batchId, visitorId)
+    if (!latest || latest.status === 'done' || latest.status === 'cancelled') return
+    const latestFinished = numberValue(latest.completed) + numberValue(latest.failed)
+    if (latestFinished <= previousFinished) return
+  }
+}
+
 async function cancelBatch(db, batchId, visitorId, nowMs) {
   const batch = await loadOwnedBatch(db, batchId, visitorId)
   if (!batch) {
@@ -635,6 +675,7 @@ export async function handlePublicBatchRequest({
   backendOrigin,
   proxySecret,
   fetcher = fetch,
+  schedule,
   nowMs = Date.now(),
 }) {
   const route = matchPublicBatchRoute(
@@ -649,7 +690,30 @@ export async function handlePublicBatchRequest({
   await maybeCleanupExpired(db, nowMs, route.action === 'list')
 
   if (route.action === 'create') {
-    return createBatch(request, db, visitorId, nowMs)
+    const response = await createBatch(request, db, visitorId, nowMs)
+    if (schedule && response.ok) {
+      const clone = response.clone()
+      const payload = await clone.json()
+      const batchId = payload?.data?.batch_id
+      if (batchId) {
+        schedule(
+          runBatchInBackground(
+            db,
+            batchId,
+            visitorId,
+            backendOrigin,
+            proxySecret,
+            fetcher,
+          ).catch(error => {
+            console.error(
+              'Public batch background runner stopped',
+              error instanceof Error ? error.name : 'UnknownError',
+            )
+          }),
+        )
+      }
+    }
+    return response
   }
   if (route.action === 'list') {
     return listBatches(request, db, visitorId)
@@ -672,3 +736,5 @@ export const publicBatchConstants = {
   BATCH_TTL_MS,
   ITEM_CLAIM_TTL_MS,
 }
+
+export { runBatchInBackground }

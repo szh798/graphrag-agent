@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from models.schemas import APIResponse, BatchQueryRequest, QueryRequest
+from public_access import PUBLIC_DEMO_HEADER, public_document_ids
 from services import qa_service as svc
 from storage.app_repository import LEGACY_OWNER_ID
 
@@ -87,6 +88,7 @@ async def run_query(
     body: QueryRequest,
     owner_id: str = Depends(_visitor_owner_id),
     stateless_batch: str | None = Header(default=None, alias=STATELESS_BATCH_HEADER),
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
 ):
     try:
         loop = asyncio.get_event_loop()
@@ -99,6 +101,7 @@ async def run_query(
                 owner_id,
                 body.session_id,
                 persist_session=stateless_batch != "1",
+                allowed_document_ids=public_document_ids(public_demo),
             ),
         )
         return APIResponse.ok(result)
@@ -127,7 +130,11 @@ async def run_query(
 
 
 @router.post("/stream")
-async def stream_query(body: QueryRequest, owner_id: str = Depends(_visitor_owner_id)):
+async def stream_query(
+    body: QueryRequest,
+    owner_id: str = Depends(_visitor_owner_id),
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+):
     async def event_generator():
         yield _sse_event("status", {"message": "正在分析问题..."})
         await asyncio.sleep(0.01)
@@ -137,7 +144,14 @@ async def stream_query(body: QueryRequest, owner_id: str = Depends(_visitor_owne
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
-                partial(svc.run_query, body.question, [m.model_dump() for m in body.history], owner_id, body.session_id),
+                partial(
+                    svc.run_query,
+                    body.question,
+                    [m.model_dump() for m in body.history],
+                    owner_id,
+                    body.session_id,
+                    allowed_document_ids=public_document_ids(public_demo),
+                ),
             )
         except Exception as exc:
             if not (isinstance(exc, ValueError) and any(code in str(exc) for code in ("KG_EMPTY", "SESSION_NOT_FOUND"))):

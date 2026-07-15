@@ -2,9 +2,15 @@ backend/.env
 backend/.venv
 backend/__pycache__
 backend/data/uploads
+backend/data/batches
+backend/data/artifacts
+backend/data/query_history.jsonl
+backend/data/chat_sessions.json
+backend/data/jobs/*/mineru_output
 backend/output
 backend/**/*.pyc
 frontend/node_modules
 frontend/dist
+.env.local
 .demo-runtime
 .DS_Store

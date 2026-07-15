@@ -1,12 +1,13 @@
+import importlib.util
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 
 from models.schemas import APIResponse
+from public_access import PUBLIC_DEMO_HEADER, public_document_ids
 from pipeline.llm_config import LLM_API_KEY, LLM_BASE_URL, LLM_INDEX_MODEL, LLM_MODEL, LLM_PROVIDER
 from services.local_parser import SUPPORTED_LOCAL_EXTENSIONS
 from storage import app_repository as app_store
@@ -18,6 +19,8 @@ from storage import queue_repository as queue_store
 router = APIRouter(tags=["System"])
 
 _START_TIME = time.time()
+_STATS_CACHE_TTL_SECONDS = 30.0
+_stats_cache: dict[tuple[tuple[str, ...] | None, str | None], tuple[float, dict]] = {}
 _PUBLIC_COMPONENT_FIELDS = {
     "status",
     "backend",
@@ -57,34 +60,17 @@ def _backend_python_candidates(backend_dir: Path) -> list[Path]:
 
 
 def _check_python_import(module_name: str, backend_dir: Path) -> dict:
-    for python_path in _backend_python_candidates(backend_dir):
-        if not python_path.exists():
-            continue
-        try:
-            result = subprocess.run(
-                [str(python_path), "-c", f"import {module_name}; print('ok')"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except Exception as exc:
-            return {
-                "status": "error",
-                "path": str(python_path),
-                "exists": True,
-                "error": str(exc),
-            }
-        if result.returncode == 0 and "ok" in result.stdout:
-            return {
-                "status": "ok",
-                "path": str(python_path),
-                "exists": True,
-            }
-
+    # Importing a large dependency in a child process made every health poll
+    # expensive and amplified cold starts. ``find_spec`` is a side-effect-free
+    # availability check in the actual runtime that serves the request.
+    try:
+        available = importlib.util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        available = False
     return {
-        "status": "error",
-        "path": str(_backend_python_candidates(backend_dir)[0]),
-        "exists": False,
+        "status": "ok" if available else "error",
+        "path": str(Path(sys.executable)),
+        "exists": available,
     }
 
 
@@ -97,8 +83,36 @@ def _normalized_parser_mode() -> str:
     return "auto"
 
 
-@router.get("/health")
-async def health_check():
+def _production_mode() -> bool:
+    return any(
+        os.getenv(name, "").strip().lower() in {"production", "prod"}
+        for name in ("VERCEL_ENV", "ENVIRONMENT")
+    )
+
+
+def _production_dependency_issues(components: dict[str, dict]) -> list[str]:
+    """Return unsafe production dependencies while allowing local demo mode."""
+    if not _production_mode():
+        return []
+
+    issues: list[str] = []
+    required_backends = {
+        "graph_database": {"neo4j"},
+        "app_database": {"postgres"},
+        "blob_storage": {"vercel_blob"},
+    }
+    for name, allowed in required_backends.items():
+        component = components.get(name, {})
+        if component.get("status") != "ok" or component.get("backend") not in allowed:
+            issues.append(name)
+
+    queue = components.get("task_queue", {})
+    if queue.get("status") != "ok" or not queue.get("durable"):
+        issues.append("task_queue")
+    return issues
+
+
+def _health_payload() -> dict:
     backend_dir = Path(__file__).parent.parent
     env_path = backend_dir / ".env"
     from dotenv import load_dotenv
@@ -112,7 +126,7 @@ async def health_check():
     active_parser = "mineru" if parser_mode == "mineru" or (parser_mode == "auto" and mineru_token) else "local"
     parser_status = "error" if parser_mode == "mineru" and not mineru_token else "ok"
 
-    raw_components = {
+    raw_components: dict[str, dict] = {
         "document_parser": {
             "status": parser_status,
             "mode": parser_mode,
@@ -170,18 +184,31 @@ async def health_check():
         "task_queue": queue_store.get_queue_repository().health(),
     }
 
+    production_issues = _production_dependency_issues(raw_components)
+    if production_issues:
+        raw_components["storage"]["status"] = "degraded"
+        raw_components["storage"]["warning"] = (
+            "Production dependencies are not durable: " + ", ".join(production_issues)
+        )
+
     overall = "healthy" if all(c["status"] == "ok" for c in raw_components.values()) else "degraded"
     components = {
         name: _sanitize_component(component)
         for name, component in raw_components.items()
     }
 
-    return APIResponse.ok({
+    return {
         "status": overall,
         "version": "1.0.0",
         "uptime_seconds": round(time.time() - _START_TIME, 1),
         "components": components,
-    })
+        "production_ready": not production_issues and overall == "healthy",
+    }
+
+
+@router.get("/health")
+async def health_check():
+    return APIResponse.ok(_health_payload())
 
 
 @router.get("/health/live")
@@ -195,29 +222,45 @@ async def live_check():
 
 @router.get("/health/ready")
 async def ready_check():
-    health = await health_check()
-    components = health.data["components"]
-    ready = all(component.get("status") == "ok" for component in components.values())
+    health = _health_payload()
+    components = health["components"]
+    ready = bool(health["production_ready"])
     return APIResponse.ok({
         "status": "ready" if ready else "degraded",
-        "version": health.data["version"],
-        "uptime_seconds": health.data["uptime_seconds"],
+        "version": health["version"],
+        "uptime_seconds": health["uptime_seconds"],
         "components": components,
     })
 
 
 @router.get("/system/stats")
-async def system_stats():
+async def system_stats(
+    public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
+    visitor_id: str | None = Header(default=None, alias="X-GraphRAG-Visitor-ID"),
+):
+    global _stats_cache
+    now = time.monotonic()
+    allowed_ids = public_document_ids(public_demo)
+    cache_key = (
+        tuple(sorted(allowed_ids)) if allowed_ids is not None else None,
+        visitor_id if allowed_ids is not None else None,
+    )
+    cached = _stats_cache.get(cache_key)
+    if cached and now - cached[0] < _STATS_CACHE_TTL_SECONDS:
+        return APIResponse.ok(dict(cached[1]))
+
     from services import indexing_service as idx_svc
 
     app_repo = app_store.get_app_repository()
     docs = list(app_repo.list_documents())
+    if allowed_ids is not None:
+        docs = [doc for doc in docs if doc.get("doc_id") in allowed_ids]
     from services import kg_service
 
-    kg_stats = kg_service.get_stats()
-    history = app_repo.load_query_history()
+    kg_stats = kg_service.get_stats(allowed_ids)
+    history = app_repo.load_query_history(visitor_id or app_store.LEGACY_OWNER_ID)
 
-    return APIResponse.ok({
+    payload = {
         "total_documents": len(docs),
         "indexed_documents": sum(1 for d in docs if d.get("status") == "indexed"),
         "failed_documents": sum(1 for d in docs if d.get("status") == "failed"),
@@ -226,8 +269,10 @@ async def system_stats():
         "type_distribution": kg_stats.get("type_distribution", {}),
         "total_queries": len(history),
         "active_jobs": idx_svc.count_active_jobs(),
-        "storage_used_mb": fs.storage_used_mb(),
-    })
+        "storage_used_mb": 0 if allowed_ids is not None else fs.storage_used_mb(),
+    }
+    _stats_cache[cache_key] = (now, payload)
+    return APIResponse.ok(dict(payload))
 
 
 @router.get("/system/formats")

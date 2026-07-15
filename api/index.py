@@ -21,7 +21,18 @@ def _ensure_runtime_data() -> None:
     if RUNTIME_DATA.exists():
         return
     if SOURCE_DATA.exists():
-        shutil.copytree(SOURCE_DATA, RUNTIME_DATA, ignore=shutil.ignore_patterns("uploads"))
+        shutil.copytree(
+            SOURCE_DATA,
+            RUNTIME_DATA,
+            ignore=shutil.ignore_patterns(
+                "uploads",
+                "batches",
+                "artifacts",
+                "query_history.jsonl",
+                "chat_sessions.json",
+                "mineru_output",
+            ),
+        )
     else:
         (RUNTIME_DATA / "kg").mkdir(parents=True, exist_ok=True)
         (RUNTIME_DATA / "jobs").mkdir(parents=True, exist_ok=True)

@@ -112,7 +112,7 @@ function mapApiDoc(d: ApiDoc): Document {
   };
 }
 
-function mapApiIndexResult(result: ApiIndexResult): Document['result'] {
+function mapApiIndexResult(result: ApiIndexResult): NonNullable<Document['result']> {
   return {
     nodes: result.summary?.nodes ?? result.nodes_added ?? result.stats?.nodes ?? 0,
     edges: result.summary?.edges ?? result.edges_added ?? result.stats?.edges ?? 0,
@@ -333,13 +333,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         mineru: h.components.mineru_venv.status === 'ok' ? 'ok' : 'error',
         langextract: h.components.langextract_venv.status === 'ok' ? 'ok' : 'error',
         deepseek: (h.components.llm_api ?? h.components.deepseek_api)?.status === 'ok' ? 'ok' : 'error',
-        storage: [
-          h.components.storage,
-          h.components.graph_database,
-          h.components.app_database,
-          h.components.blob_storage,
-          h.components.task_queue,
-        ].every(component => !component || component.status === 'ok') ? 'ok' : 'error',
+        storage: (h.components.blob_storage ?? h.components.storage)?.status === 'ok' ? 'ok' : 'error',
       });
       setStats({
         kg_nodes: s.total_nodes,
@@ -362,11 +356,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshHealthStats();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Poll health/stats every 10 s ──────────────────────────────────────────
+  // ── Revalidate health/stats without keeping background tabs hot ───────────
 
   useEffect(() => {
-    const id = setInterval(refreshHealthStats, 10_000);
-    return () => clearInterval(id);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshHealthStats();
+    };
+    const id = window.setInterval(refreshWhenVisible, 60_000);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    window.addEventListener('focus', refreshWhenVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('focus', refreshWhenVisible);
+    };
   }, [refreshHealthStats]);
 
   // ── Poll active indexing jobs every 3 s ───────────────────────────────────
