@@ -113,7 +113,7 @@ async function resolveUploadOwner(request: Request): Promise<{ ownerId: string; 
   }
 }
 
-export default async function handler(request: Request): Promise<Response> {
+export async function POST(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
     return Response.json({ code: 405, msg: 'Method not allowed', data: null }, { status: 405 })
   }

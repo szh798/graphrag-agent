@@ -13,8 +13,8 @@ export interface DirectUploadOptions {
 /**
  * Upload a document without sending its bytes through a Vercel Function.
  *
- * The trusted proxy must authorize the token exchange. Public demo routes keep
- * this endpoint disabled; an authenticated management surface can reuse it.
+ * The trusted proxy authorizes the token exchange. Public visitors may use the
+ * route, while document ownership remains scoped to their visitor or account.
  */
 export async function uploadDocumentDirect(file: File, options: DirectUploadOptions = {}) {
   if (file.size <= 0) throw new Error('文件为空');

@@ -8,7 +8,7 @@ function secureEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b)
 }
 
-export default async function handler(request: Request): Promise<Response> {
+export async function POST(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
     return Response.json({ code: 405, msg: 'Method not allowed', data: null }, { status: 405 })
   }
