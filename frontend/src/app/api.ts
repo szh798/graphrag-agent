@@ -115,8 +115,8 @@ export interface ApiIndexSummary {
   nodes: number;
   edges: number;
   pages: number;
-  extractions: number;
-  duration_seconds: number;
+  extractions?: number;
+  duration_seconds?: number;
 }
 
 export interface ApiExtractionRecord {
@@ -154,6 +154,7 @@ export interface ApiIndexResult {
   pages_processed?: number;
   extractions_count?: number;
   duration_seconds?: number;
+  recovered?: boolean;
 }
 
 export interface ApiDocumentExtractions {

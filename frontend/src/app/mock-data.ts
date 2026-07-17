@@ -35,8 +35,9 @@ export interface Document {
     nodes: number;
     edges: number;
     pages: number;
-    extractions: number;
-    duration: number;
+    extractions?: number;
+    duration?: number;
+    recovered?: boolean;
   };
 }
 

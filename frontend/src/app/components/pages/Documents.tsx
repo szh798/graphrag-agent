@@ -43,8 +43,9 @@ export function Documents() {
     nodes: result.summary?.nodes ?? result.nodes_added ?? result.stats?.nodes ?? 0,
     edges: result.summary?.edges ?? result.edges_added ?? result.stats?.edges ?? 0,
     pages: result.summary?.pages ?? result.pages_processed ?? result.stats?.pages ?? 0,
-    extractions: result.summary?.extractions ?? result.extractions_count ?? result.stats?.raw_extractions ?? 0,
-    duration: result.summary?.duration_seconds ?? result.duration_seconds ?? result.stats?.elapsed_seconds ?? result.elapsed_seconds ?? 0,
+    extractions: result.recovered ? undefined : (result.summary?.extractions ?? result.extractions_count ?? result.stats?.raw_extractions ?? 0),
+    duration: result.recovered ? undefined : (result.summary?.duration_seconds ?? result.duration_seconds ?? result.stats?.elapsed_seconds ?? result.elapsed_seconds ?? 0),
+    recovered: result.recovered,
   });
 
   const handleToggleExpanded = useCallback(async (doc: Document) => {
@@ -342,10 +343,19 @@ export function Documents() {
 	                        <span>{doc.result.edges} 条边</span>
 	                        <span style={{ color: 'var(--text-4)' }}>&middot;</span>
 	                        <span>{doc.result.pages} 页</span>
-	                        <span style={{ color: 'var(--text-4)' }}>&middot;</span>
-	                        <span>{doc.result.extractions} 次提取</span>
-	                        <span style={{ color: 'var(--text-4)' }}>&middot;</span>
-	                        <span>{doc.result.duration.toFixed(1)}秒</span>
+	                        {doc.result.recovered ? (
+	                          <>
+	                            <span style={{ color: 'var(--text-4)' }}>&middot;</span>
+	                            <span style={{ color: 'var(--yellow)' }}>历史索引摘要（由现有图谱恢复）</span>
+	                          </>
+	                        ) : (
+	                          <>
+	                            <span style={{ color: 'var(--text-4)' }}>&middot;</span>
+	                            <span>{doc.result.extractions ?? 0} 次提取</span>
+	                            <span style={{ color: 'var(--text-4)' }}>&middot;</span>
+	                            <span>{(doc.result.duration ?? 0).toFixed(1)}秒</span>
+	                          </>
+	                        )}
 	                      </div>
 	                    ) : (
 	                      <div className="mb-2" style={{ fontSize: 13, color: 'var(--text-3)' }}>
@@ -360,13 +370,15 @@ export function Documents() {
 	                      >
 	                        在图谱中查看
 	                      </button>
-	                      <button
-	                        onClick={() => handleViewExtractions(doc)}
-	                        className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
-	                        style={{ fontSize: 11, background: 'var(--bg-s1)', color: 'var(--text-2)', border: '1px solid var(--border-muted)' }}
-	                      >
-	                        查看提取结果
-	                      </button>
+	                      {!doc.result?.recovered && (
+	                        <button
+	                          onClick={() => handleViewExtractions(doc)}
+	                          className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
+	                          style={{ fontSize: 11, background: 'var(--bg-s1)', color: 'var(--text-2)', border: '1px solid var(--border-muted)' }}
+	                        >
+	                          查看提取结果
+	                        </button>
+	                      )}
 	                    </div>
 	                  </div>
                 )}

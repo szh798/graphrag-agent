@@ -312,11 +312,47 @@ def _latest_done_job(doc_id: str) -> dict | None:
 
 
 def get_document_index_result(doc_id: str) -> dict | None:
-    if not app_store.get_app_repository().get_document(doc_id):
+    document = app_store.get_app_repository().get_document(doc_id)
+    if not document:
         return None
     meta = _latest_done_job(doc_id)
     if not meta:
-        return None
+        # Legacy indexed documents can outlive their transient job metadata and
+        # artifacts.  The persisted graph is still authoritative for the
+        # durable node/edge counts, so expose an honest partial result instead
+        # of reporting that the index result does not exist.
+        if document.get("status") != "indexed":
+            return None
+        try:
+            graph = graph_store.get_graph_repository().export_kg(doc_id)
+        except Exception:
+            return None
+
+        nodes = graph.get("nodes") or []
+        edges = graph.get("edges") or []
+        if not nodes and not edges:
+            return None
+
+        public_doc = public_document(document)
+        pages = int(public_doc.get("pages") or 0)
+        summary = {
+            "nodes": int(graph.get("total_nodes") or len(nodes)),
+            "edges": int(graph.get("total_edges") or len(edges)),
+            "pages": pages,
+        }
+        return {
+            "job_id": f"recovered-{doc_id}",
+            "doc_id": doc_id,
+            "status": "done",
+            "stage": "Recovered from persisted graph",
+            "created_at": document.get("uploaded_at") or document.get("upload_date"),
+            "summary": summary,
+            "stats": summary,
+            "nodes": [],
+            "edges": [],
+            "extractions": [],
+            "recovered": True,
+        }
 
     job_id = meta["job_id"]
     job_dir = fs.job_dir(job_id)

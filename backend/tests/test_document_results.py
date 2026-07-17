@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class DocumentResultTests(unittest.TestCase):
@@ -105,6 +105,74 @@ class DocumentResultTests(unittest.TestCase):
         self.assertEqual(result["doc_id"], "doc_1")
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["text"], "Python")
+
+    def test_document_index_result_recovers_summary_from_persisted_graph(self):
+        from services import document_service as svc
+
+        graph_repo = Mock()
+        graph_repo.export_kg.return_value = {
+            "doc_id": "doc_legacy",
+            "total_nodes": 2,
+            "total_edges": 1,
+            "nodes": [{"id": "n1"}, {"id": "n2"}],
+            "edges": [{"source": "n1", "target": "n2"}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(svc.fs, "_BASE", Path(tmp)),
+                patch.object(svc.graph_store, "get_graph_repository", return_value=graph_repo),
+            ):
+                svc.fs.save_doc({
+                    "doc_id": "doc_legacy",
+                    "filename": "legacy.pdf",
+                    "format": "pdf",
+                    "size_bytes": 128,
+                    "pages": 10,
+                    "uploaded_at": "2026-06-25T00:00:00+00:00",
+                    "status": "indexed",
+                    "upload_filename": "doc_legacy.pdf",
+                })
+
+                result = svc.get_document_index_result("doc_legacy")
+
+        self.assertTrue(result["recovered"])
+        self.assertEqual(result["job_id"], "recovered-doc_legacy")
+        self.assertEqual(result["summary"], {"nodes": 2, "edges": 1, "pages": 10})
+        self.assertEqual(result["extractions"], [])
+        graph_repo.export_kg.assert_called_once_with("doc_legacy")
+
+    def test_document_index_result_does_not_recover_empty_graph(self):
+        from services import document_service as svc
+
+        graph_repo = Mock()
+        graph_repo.export_kg.return_value = {
+            "doc_id": "doc_stale",
+            "total_nodes": 0,
+            "total_edges": 0,
+            "nodes": [],
+            "edges": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(svc.fs, "_BASE", Path(tmp)),
+                patch.object(svc.graph_store, "get_graph_repository", return_value=graph_repo),
+            ):
+                svc.fs.save_doc({
+                    "doc_id": "doc_stale",
+                    "filename": "stale.pdf",
+                    "format": "pdf",
+                    "size_bytes": 128,
+                    "pages": 1,
+                    "uploaded_at": "2026-06-25T00:00:00+00:00",
+                    "status": "indexed",
+                    "upload_filename": "doc_stale.pdf",
+                })
+
+                result = svc.get_document_index_result("doc_stale")
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
