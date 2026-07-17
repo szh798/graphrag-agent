@@ -14,7 +14,9 @@ const LAYOUT_AFTER_DRAG_MS = 700;
 const LARGE_GRAPH_NODE_THRESHOLD = 120;
 const LARGE_GRAPH_EDGE_THRESHOLD = 800;
 const DRAG_REHEAT_ALPHA = 0.08;
-const DRAG_ALPHA_TARGET = 0.015;
+// Keep this above simulation.alphaMin() so the force simulation cannot cool
+// down while the pointer is still held on a node.
+const DRAG_ALPHA_TARGET = 0.06;
 const LARGE_GRAPH_BASE_LABELS = 32;
 const SMALL_GRAPH_BASE_LABELS = 24;
 
@@ -241,7 +243,14 @@ export function KGExplorer() {
           d.vx = 0; d.vy = 0;
           d.fx = d.x; d.fy = d.y;
         })
-        .on('drag', (event, d: any) => { d.fx = event.x; d.fy = event.y; })
+        .on('drag', (event, d: any) => {
+          // A stale settle timer or a cooled simulation must never interrupt an
+          // active pointer drag. The 700 ms settling window starts only in end.
+          clearLayoutStopTimer();
+          d.fx = event.x;
+          d.fy = event.y;
+          simulation.alphaTarget(DRAG_ALPHA_TARGET).restart();
+        })
         .on('end', function(event, d: any) {
           d3.select(this).attr('cursor', 'grab');
           if (!event.active) simulation.alphaTarget(0);

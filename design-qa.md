@@ -12,6 +12,7 @@
 - Zooming in increases visible labels from 24 to 48 in the 72-node fixture.
 - Selecting an entity reveals and emphasizes its label even when it was hidden by the density rule.
 - Dragging an entity moved its node and label by the same 64 px × -30 px delta, with no console error.
+- A continuous 891 ms drag (longer than the 700 ms post-release settling window) reached the pointer's final coordinates exactly; the node stopped only after release.
 - The existing graph controls, filters, and dark visual language remain unchanged.
 - Frontend tests, TypeScript checks, and the production build pass.
 
