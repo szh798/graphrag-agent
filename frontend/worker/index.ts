@@ -26,6 +26,9 @@ interface Env {
 }
 
 const SITE_ORIGIN_PLACEHOLDER = '__SITE_ORIGIN__'
+const INDEX_RECOVERY_DISPATCH_LEASE_ID = '__index_recovery_dispatch__'
+const INDEX_RECOVERY_DISPATCH_LEASE_OWNER = 'system'
+const INDEX_RECOVERY_DISPATCH_LEASE_MS = 30_000
 
 const RATE_LIMITS: Record<string, RateLimitPolicy> = {
   qa: { hourly: 8, daily: 24 },
@@ -176,6 +179,27 @@ async function dispatchIndexWorker(env: Env, visitorId: string, requestId: strin
       requestId,
     })
   }
+}
+
+async function dispatchIndexWorkerForStatusPoll(
+  env: Env,
+  visitorId: string,
+  requestId: string,
+): Promise<void> {
+  // A Vercel worker can be interrupted before it acknowledges its Redis lease.
+  // Status polling is a reliable wake-up signal, but throttle it globally so a
+  // normal three-second poll loop does not create an empty worker invocation on
+  // every request.
+  if (env.DB) {
+    const lease = await acquireBatchPollLease(
+      env.DB,
+      INDEX_RECOVERY_DISPATCH_LEASE_ID,
+      INDEX_RECOVERY_DISPATCH_LEASE_OWNER,
+      INDEX_RECOVERY_DISPATCH_LEASE_MS,
+    )
+    if (!lease.acquired) return
+  }
+  await dispatchIndexWorker(env, visitorId, requestId)
 }
 
 async function enforcePaidRouteProtection(
@@ -391,6 +415,13 @@ export default {
           if (request.method === 'POST' && url.pathname === '/api/v1/index/start' && response.ok) {
             const requestId = response.headers.get('X-Request-ID') || crypto.randomUUID()
             ctx.waitUntil(dispatchIndexWorker(env, visitor.id, requestId))
+          } else if (
+            request.method === 'GET' &&
+            /^\/api\/v1\/index\/status\/[^/]+$/.test(url.pathname) &&
+            response.ok
+          ) {
+            const requestId = response.headers.get('X-Request-ID') || crypto.randomUUID()
+            ctx.waitUntil(dispatchIndexWorkerForStatusPoll(env, visitor.id, requestId))
           }
           if (response.status >= 500) {
             const requestId = response.headers.get('X-Request-ID') || crypto.randomUUID()
