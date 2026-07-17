@@ -215,7 +215,7 @@ const SUGGESTED_PROMPTS = [
 ];
 
 const KG_NODES_PAGE_SIZE = 200;
-const KG_EDGES_PAGE_SIZE = 500;
+const KG_EDGES_PAGE_SIZE = 5000;
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
@@ -241,7 +241,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setKgLoading(true);
       const [firstNodes, firstEdges] = await Promise.all([
         api.getNodes({ page: 1, pageSize: KG_NODES_PAGE_SIZE }),
-        api.getEdges({ page: 1, pageSize: KG_EDGES_PAGE_SIZE }),
+        api.getEdges({ page: 1, pageSize: KG_EDGES_PAGE_SIZE, layout: true }),
       ]);
 
       const nodePages = Math.ceil(firstNodes.total / Math.max(1, firstNodes.page_size));
@@ -255,7 +255,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : Promise.resolve([]),
         edgePages > 1
           ? Promise.all(Array.from({ length: edgePages - 1 }, (_, index) =>
-              api.getEdges({ page: index + 2, pageSize: KG_EDGES_PAGE_SIZE })
+              api.getEdges({ page: index + 2, pageSize: KG_EDGES_PAGE_SIZE, layout: true })
             ))
           : Promise.resolve([]),
       ]);

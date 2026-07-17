@@ -493,11 +493,12 @@ export const api = {
       doc_id: params?.docId,
     }),
 
-  getEdges: (params?: { page?: number; pageSize?: number; docId?: string }) =>
-    get<{ total: number; page: number; page_size: number; items: ApiKGEdge[] }>('/kg/edges', {
+  getEdges: (params?: { page?: number; pageSize?: number; docId?: string; layout?: boolean }) =>
+    get<{ total: number; raw_total?: number; page: number; page_size: number; items: ApiKGEdge[] }>('/kg/edges', {
       page: params?.page,
       page_size: params?.pageSize ?? 2000,
       doc_id: params?.docId,
+      layout: params?.layout,
     }),
 
   getNodeDetail: (nodeId: string) => get<ApiKGNode>(`/kg/nodes/${nodeId}`),
@@ -513,7 +514,9 @@ export const api = {
   getKGStats: () =>
     get<{ total_nodes: number; total_edges: number; type_distribution: Record<string, number> }>('/kg/stats'),
 
-  exportKG: () => get<{ nodes: ApiKGNode[]; edges: ApiKGEdge[] }>('/kg/export'),
+  exportKG: (docId?: string) => get<{ nodes: ApiKGNode[]; edges: ApiKGEdge[] }>('/kg/export', {
+    doc_id: docId,
+  }),
 
   // D: QA Query
   query: (question: string, history: { question: string; answer: string }[] = [], sessionId?: string | null) => {

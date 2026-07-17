@@ -5,13 +5,37 @@ import { ZoomIn, ZoomOut, Maximize2, Search, Download, Image, X, MessageSquare, 
 import { toast } from 'sonner';
 import { useAppState, type KGNode } from '../../store';
 import { TYPE_COLORS } from '../../mock-data';
+import { api } from '../../api';
 
 const ENTITY_TYPES = ['TECHNOLOGY', 'CONCEPT', 'PERSON', 'ORGANIZATION', 'LOCATION'] as const;
 const CONFIDENCE_LEVELS = ['match_exact', 'match_greater', 'match_lesser', 'match_fuzzy'] as const;
-const LAYOUT_MAX_RUNTIME_MS = 4_000;
-const LAYOUT_AFTER_DRAG_MS = 1_600;
-const DRAG_REHEAT_ALPHA = 0.12;
-const DRAG_ALPHA_TARGET = 0.03;
+const LAYOUT_MAX_RUNTIME_MS = 1_800;
+const LAYOUT_AFTER_DRAG_MS = 700;
+const LARGE_GRAPH_NODE_THRESHOLD = 120;
+const LARGE_GRAPH_EDGE_THRESHOLD = 800;
+const DRAG_REHEAT_ALPHA = 0.08;
+const DRAG_ALPHA_TARGET = 0.015;
+
+function placeNodesDeterministically(nodes: any[], width: number, height: number, seed = 0) {
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const maxRadius = Math.max(80, Math.min(width, height) * 0.38);
+  nodes.forEach((node, index) => {
+    const progress = Math.sqrt((index + 1) / Math.max(1, nodes.length));
+    const angle = (index + seed * 17) * goldenAngle;
+    node.x = width / 2 + Math.cos(angle) * maxRadius * progress;
+    node.y = height / 2 + Math.sin(angle) * maxRadius * progress;
+    node.vx = 0;
+    node.vy = 0;
+  });
+}
+
+function freezeSimulation(simulation: d3.Simulation<any, any>) {
+  simulation.alphaTarget(0).stop();
+  simulation.nodes().forEach(node => {
+    node.vx = 0;
+    node.vy = 0;
+  });
+}
 
 export function KGExplorer() {
   const { nodes, edges, documents, selectedNode, setSelectedNode, getNeighbors } = useAppState();
@@ -22,6 +46,7 @@ export function KGExplorer() {
   const simulationRef = useRef<d3.Simulation<any, any> | null>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const layoutStopTimerRef = useRef<number | null>(null);
+  const layoutSeedRef = useRef(0);
 
   const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set(ENTITY_TYPES));
   const [filterConfidence, setFilterConfidence] = useState<Set<string>>(new Set(CONFIDENCE_LEVELS));
@@ -81,19 +106,47 @@ export function KGExplorer() {
     zoomRef.current = zoom;
     svg.call(zoom);
 
-    // Create simulation data copies
-    const simNodes = visibleNodes.map(n => ({ ...n, x: width / 2 + (Math.random() - 0.5) * 200, y: height / 2 + (Math.random() - 0.5) * 200 }));
+    // Use the sparse layout graph's degree for visual sizing. Historical
+    // Markdown cliques otherwise make every node look equally dominant.
+    const layoutDegree = new Map<string, number>();
+    visibleEdges.forEach(edge => {
+      layoutDegree.set(edge.source, (layoutDegree.get(edge.source) ?? 0) + 1);
+      layoutDegree.set(edge.target, (layoutDegree.get(edge.target) ?? 0) + 1);
+    });
+
+    // Deterministic initial positions prevent the graph from jumping every
+    // time filters or the selected document change.
+    const simNodes = visibleNodes.map(n => ({
+      ...n,
+      degree: layoutDegree.get(n.id) ?? 0,
+      x: width / 2,
+      y: height / 2,
+      vx: 0,
+      vy: 0,
+    }));
+    placeNodesDeterministically(simNodes, width, height, layoutSeedRef.current);
     const simEdges = visibleEdges.map(e => ({ ...e, source: e.source, target: e.target }));
+    const isLargeGraph = simNodes.length >= LARGE_GRAPH_NODE_THRESHOLD || simEdges.length >= LARGE_GRAPH_EDGE_THRESHOLD;
 
     const simulation = d3.forceSimulation(simNodes)
-      .force('link', d3.forceLink(simEdges).id((d: any) => d.id).distance(60).strength(0.3))
-      .force('charge', d3.forceManyBody().strength(-120))
+      .force('link', d3.forceLink(simEdges)
+        .id((d: any) => d.id)
+        .distance(isLargeGraph ? 82 : 64)
+        .strength(isLargeGraph ? 0.12 : 0.24)
+        .iterations(isLargeGraph ? 1 : 2))
+      .force('charge', d3.forceManyBody()
+        .strength(isLargeGraph ? -85 : -120)
+        .distanceMax(isLargeGraph ? 360 : 520))
       .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('x', d3.forceX(width / 2).strength(isLargeGraph ? 0.008 : 0.015))
+      .force('y', d3.forceY(height / 2).strength(isLargeGraph ? 0.008 : 0.015))
       .force('collide', d3.forceCollide().radius((d: any) => getRadius(d.degree) + 4))
-      .alphaDecay(0.02);
+      .velocityDecay(isLargeGraph ? 0.58 : 0.48)
+      .alphaMin(0.02)
+      .alphaDecay(isLargeGraph ? 0.08 : 0.05)
+      .stop();
 
     simulationRef.current = simulation;
-    setLayoutRunning(true);
 
     const clearLayoutStopTimer = () => {
       if (layoutStopTimerRef.current !== null) {
@@ -103,14 +156,13 @@ export function KGExplorer() {
     };
     const stopSimulation = () => {
       clearLayoutStopTimer();
-      simulation.alphaTarget(0).stop();
+      freezeSimulation(simulation);
       if (simulationRef.current === simulation) setLayoutRunning(false);
     };
     const scheduleSimulationStop = (delay: number) => {
       clearLayoutStopTimer();
       layoutStopTimerRef.current = window.setTimeout(stopSimulation, delay);
     };
-    scheduleSimulationStop(LAYOUT_MAX_RUNTIME_MS);
     window.addEventListener('blur', stopSimulation);
 
     // Edges
@@ -128,6 +180,7 @@ export function KGExplorer() {
       .selectAll('circle')
       .data(simNodes)
       .join('circle')
+      .attr('data-node-id', (d: any) => d.id)
       .attr('r', (d: any) => getRadius(d.degree))
       .attr('fill', (d: any) => TYPE_COLORS[d.type] || '#8b949e')
       .attr('stroke', '#0f1117')
@@ -194,7 +247,7 @@ export function KGExplorer() {
       }
     });
 
-    simulation.on('tick', () => {
+    const renderTick = () => {
       link
         .attr('x1', (d: any) => d.source.x)
         .attr('y1', (d: any) => d.source.y)
@@ -206,11 +259,25 @@ export function KGExplorer() {
       label
         .attr('x', (d: any) => d.x)
         .attr('y', (d: any) => d.y);
-    });
+    };
+    simulation.on('tick', renderTick);
     simulation.on('end', () => {
       clearLayoutStopTimer();
       if (simulationRef.current === simulation) setLayoutRunning(false);
     });
+
+    // Dense graphs are settled off-screen once and shown already stable. Small
+    // graphs keep a short, visible settling animation. Both paths stop fully.
+    simulation.tick(isLargeGraph ? 180 : 45);
+    renderTick();
+    if (isLargeGraph) {
+      freezeSimulation(simulation);
+      setLayoutRunning(false);
+    } else {
+      simulation.alpha(0.12).alphaTarget(0).restart();
+      setLayoutRunning(true);
+      scheduleSimulationStop(1_200);
+    }
 
     if (nodeParam) {
       const target = simNodes.find(n => n.id === nodeParam);
@@ -239,7 +306,7 @@ export function KGExplorer() {
     function focusNode(d: any, center: boolean) {
       focusedNodeId = d.id;
       const selected = nodes.find(n => n.id === d.id) ?? d;
-      setSelectedNode(selected);
+      setSelectedNode({ ...selected, degree: d.degree });
       node
         .attr('opacity', (n: any) => n.id === d.id || isNeighborOf(n.id, d.id) ? 0.95 : 0.1)
         .attr('r', (n: any) => n.id === d.id ? getRadius(n.degree) * 1.5 : getRadius(n.degree))
@@ -285,15 +352,24 @@ export function KGExplorer() {
     }
 
     if (layoutRunning) {
-      simulation.alphaTarget(0).stop();
+      freezeSimulation(simulation);
       setLayoutRunning(false);
       return;
     }
 
-    simulation.alpha(0.25).alphaTarget(0).restart();
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect) {
+      layoutSeedRef.current += 1;
+      simulation.nodes().forEach(node => {
+        node.fx = null;
+        node.fy = null;
+      });
+      placeNodesDeterministically(simulation.nodes(), rect.width, rect.height, layoutSeedRef.current);
+    }
+    simulation.alpha(0.35).alphaTarget(0).restart();
     setLayoutRunning(true);
     layoutStopTimerRef.current = window.setTimeout(() => {
-      simulation.alphaTarget(0).stop();
+      freezeSimulation(simulation);
       setLayoutRunning(false);
       layoutStopTimerRef.current = null;
     }, LAYOUT_MAX_RUNTIME_MS);
@@ -343,34 +419,50 @@ export function KGExplorer() {
     URL.revokeObjectURL(url);
   };
 
-  const handleExportJSON = () => {
+  const handleExportJSON = async () => {
     if (visibleNodes.length === 0) {
       toast.warning('当前没有可导出的图谱数据');
       return;
     }
 
-    const payload = {
-      format: 'GraphRAG Studio KG export',
-      exported_at: new Date().toISOString(),
-      filters: {
-        doc_id: filterDoc,
-        entity_types: Array.from(filterTypes),
-        confidence: Array.from(filterConfidence),
-        search: searchQuery,
-      },
-      stats: {
-        nodes: visibleNodes.length,
-        edges: visibleEdges.length,
-      },
-      nodes: visibleNodes,
-      edges: visibleEdges,
-    };
+    try {
+      // The interactive canvas uses a sparse layout view for performance, but
+      // JSON export must retain the complete persisted knowledge graph.
+      const exported = await api.exportKG(filterDoc === 'all' ? undefined : filterDoc);
+      const exportedNodes = exported.nodes.filter(node => {
+        if (!filterTypes.has(node.type)) return false;
+        if (!filterConfidence.has(node.confidence)) return false;
+        return !searchQuery || node.name.toLowerCase().includes(searchQuery.toLowerCase());
+      });
+      const exportedNodeIds = new Set(exportedNodes.map(node => node.id));
+      const exportedEdges = exported.edges.filter(edge =>
+        exportedNodeIds.has(edge.source) && exportedNodeIds.has(edge.target)
+      );
+      const payload = {
+        format: 'GraphRAG Studio KG export',
+        exported_at: new Date().toISOString(),
+        filters: {
+          doc_id: filterDoc,
+          entity_types: Array.from(filterTypes),
+          confidence: Array.from(filterConfidence),
+          search: searchQuery,
+        },
+        stats: {
+          nodes: exportedNodes.length,
+          edges: exportedEdges.length,
+        },
+        nodes: exportedNodes,
+        edges: exportedEdges,
+      };
 
-    downloadBlob(
-      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }),
-      `${exportName()}.json`
-    );
-    toast.success('已导出 JSON');
+      downloadBlob(
+        new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }),
+        `${exportName()}.json`
+      );
+      toast.success('已导出完整 JSON');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'JSON 导出失败');
+    }
   };
 
   const handleExportPNG = async () => {
@@ -530,7 +622,7 @@ export function KGExplorer() {
           <button
             type="button"
             aria-label={layoutRunning ? '暂停图谱布局' : '重新计算图谱布局'}
-            title={layoutRunning ? '暂停布局' : '重新布局'}
+            title={layoutRunning ? '暂停布局' : '解除固定位置并重新布局'}
             onClick={handleToggleLayout}
             className="flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer"
             style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', fontSize: 11 }}
@@ -563,7 +655,7 @@ export function KGExplorer() {
 
         {/* Stats */}
         <div className="absolute top-3 right-3 rounded-md px-3 py-1.5" style={{ background: 'var(--bg-s1)', border: '1px solid var(--border-main)', zIndex: 10, fontSize: 11, color: 'var(--text-3)' }}>
-          {visibleNodes.length} 个节点 &middot; {visibleEdges.length} 条边
+          {visibleNodes.length} 个节点 &middot; {visibleEdges.length} 条布局边
         </div>
 
         {visibleNodes.length === 0 ? (

@@ -9,6 +9,7 @@ from collections import defaultdict
 import langextract as lx
 
 from pipeline.text_assembler import PageText
+from pipeline.cooccurrence import build_sparse_cooccurrence_edges
 
 ACCEPTED_ALIGNMENTS = {"match_exact", "match_greater", "match_lesser"}
 
@@ -47,9 +48,9 @@ def build_kg(
     # Phase 2: deduplicate nodes
     seen: dict[tuple[str, str], int] = {}
     nodes: list[dict] = []
-    node_pages: dict[int, set[int]] = defaultdict(set)
+    page_node_positions: dict[int, dict[int, int]] = defaultdict(dict)
 
-    for entity in raw_entities:
+    for entity_order, entity in enumerate(raw_entities):
         type_prefix = entity["type"].lower()[:4]
         name_slug = entity["name"].lower().replace(" ", "")[:12]
         dedup_key = (entity["name"].lower(), entity["type"])
@@ -67,34 +68,18 @@ def build_kg(
                 "page": entity["page"],
             })
         node_idx = seen[dedup_key]
-        node_pages[node_idx].add(entity["page"])
+        page_idx = entity["page"]
+        position = entity["char_start"] if entity["char_start"] is not None else entity_order
+        current = page_node_positions[page_idx].get(node_idx)
+        page_node_positions[page_idx][node_idx] = position if current is None else min(current, position)
 
-    # Phase 3: CO_OCCURS_IN edges
-    page_nodes: dict[int, list[int]] = defaultdict(list)
-    for node_idx, page_set in node_pages.items():
-        for page_idx in page_set:
-            page_nodes[page_idx].append(node_idx)
-
-    edges: list[dict] = []
-    edge_seen: set[tuple] = set()
-
-    for page_idx, node_indices in sorted(page_nodes.items()):
-        for i in range(len(node_indices)):
-            for j in range(i + 1, len(node_indices)):
-                a = nodes[node_indices[i]]["id"]
-                b = nodes[node_indices[j]]["id"]
-                src, tgt = (a, b) if a < b else (b, a)
-                key = (src, tgt, source_doc_id, page_idx)
-                if key in edge_seen:
-                    continue
-                edge_seen.add(key)
-                edges.append({
-                    "source": src,
-                    "target": tgt,
-                    "relation": "CO_OCCURS_IN",
-                    "doc_id": source_doc_id,
-                    "page": page_idx,
-                })
+    # Phase 3: nearby co-occurrence edges. Small physical pages keep their
+    # complete graph; large logical Markdown pages use bounded local links.
+    positioned_nodes = {
+        page_idx: [(position, nodes[node_idx]["id"]) for node_idx, position in positions.items()]
+        for page_idx, positions in page_node_positions.items()
+    }
+    edges = build_sparse_cooccurrence_edges(positioned_nodes, source_doc_id)
 
     return nodes, edges
 

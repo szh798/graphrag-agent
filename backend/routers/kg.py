@@ -46,6 +46,7 @@ async def list_nodes(
 async def list_edges(
     doc_id: str | None = None,
     relation: str | None = None,
+    layout: bool = False,
     page: int = 1,
     page_size: int = 100,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
@@ -55,6 +56,18 @@ async def list_edges(
     allowed_ids = visible_document_ids(public_demo, identity.owner_id)
     if doc_id and not document_is_visible(doc_id, allowed_ids):
         return APIResponse.ok({"total": 0, "page": page, "page_size": page_size, "items": []})
+    if layout:
+        result = svc.get_layout_edges(doc_id, allowed_ids, relation)
+        items = result["items"]
+        total = len(items)
+        start = (page - 1) * page_size
+        return APIResponse.ok({
+            "total": total,
+            "raw_total": result["raw_total"],
+            "page": page,
+            "page_size": page_size,
+            "items": items[start:start + page_size],
+        })
     if allowed_ids is not None:
         items = svc.export_kg(doc_id, allowed_ids).get("edges", [])
         if relation:

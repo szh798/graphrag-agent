@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from storage import graph_repository as graph_store
+from pipeline.cooccurrence import select_sparse_layout_edges
 
 
 def _allowed_export(allowed_doc_ids: set[str]) -> dict:
@@ -32,6 +33,19 @@ def get_edges(page: int = 1, page_size: int = 100,
               doc_id: str | None = None,
               relation: str | None = None) -> dict:
     return graph_store.get_graph_repository().get_edges(page, page_size, doc_id, relation)
+
+
+def get_layout_edges(
+    doc_id: str | None = None,
+    allowed_doc_ids: set[str] | None = None,
+    relation: str | None = None,
+) -> dict:
+    exported = export_kg(doc_id, allowed_doc_ids)
+    raw_edges = exported.get("edges", [])
+    items = select_sparse_layout_edges(exported.get("nodes", []), raw_edges)
+    if relation:
+        items = [item for item in items if item.get("relation") == relation]
+    return {"items": items, "raw_total": len(raw_edges)}
 
 
 def get_node_detail(node_id: str) -> dict | None:
