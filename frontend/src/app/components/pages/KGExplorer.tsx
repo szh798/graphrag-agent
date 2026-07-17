@@ -15,6 +15,13 @@ const LARGE_GRAPH_NODE_THRESHOLD = 120;
 const LARGE_GRAPH_EDGE_THRESHOLD = 800;
 const DRAG_REHEAT_ALPHA = 0.08;
 const DRAG_ALPHA_TARGET = 0.015;
+const LARGE_GRAPH_BASE_LABELS = 32;
+const SMALL_GRAPH_BASE_LABELS = 24;
+
+function compactLabel(name: string) {
+  const value = name.trim();
+  return value.length > 18 ? `${value.slice(0, 17)}…` : value;
+}
 
 function placeNodesDeterministically(nodes: any[], width: number, height: number, seed = 0) {
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
@@ -99,10 +106,19 @@ export function KGExplorer() {
     svg.attr('width', width).attr('height', height);
 
     const g = svg.append('g');
+    let labelSelection: d3.Selection<any, any, any, any> | null = null;
+    let focusedNodeId: string | null = null;
+    let hoveredNodeId: string | null = null;
+    let currentZoomScale = 1;
+    let updateLabelVisibility = () => {};
 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 8])
-      .on('zoom', (event) => g.attr('transform', event.transform));
+      .on('zoom', (event) => {
+        currentZoomScale = event.transform.k;
+        g.attr('transform', event.transform);
+        updateLabelVisibility();
+      });
     zoomRef.current = zoom;
     svg.call(zoom);
 
@@ -127,6 +143,14 @@ export function KGExplorer() {
     placeNodesDeterministically(simNodes, width, height, layoutSeedRef.current);
     const simEdges = visibleEdges.map(e => ({ ...e, source: e.source, target: e.target }));
     const isLargeGraph = simNodes.length >= LARGE_GRAPH_NODE_THRESHOLD || simEdges.length >= LARGE_GRAPH_EDGE_THRESHOLD;
+    const rankedNodeIds = [...simNodes]
+      .sort((a, b) => b.degree - a.degree || a.name.localeCompare(b.name, 'zh-CN'))
+      .map(node => node.id);
+    const labelRank = new Map(rankedNodeIds.map((id, index) => [id, index]));
+    const baseLabelCount = Math.min(
+      simNodes.length,
+      isLargeGraph ? LARGE_GRAPH_BASE_LABELS : SMALL_GRAPH_BASE_LABELS,
+    );
 
     const simulation = d3.forceSimulation(simNodes)
       .force('link', d3.forceLink(simEdges)
@@ -173,7 +197,6 @@ export function KGExplorer() {
       .attr('stroke', '#30363d')
       .attr('stroke-width', 1)
       .attr('stroke-opacity', 0.25);
-    let focusedNodeId: string | null = null;
 
     // Nodes
     const node = g.append('g')
@@ -188,10 +211,14 @@ export function KGExplorer() {
       .attr('opacity', 0.9)
       .attr('cursor', 'grab')
       .on('mouseover', function(event, d: any) {
+        hoveredNodeId = d.id;
+        updateLabelVisibility();
         d3.select(this).attr('stroke', '#ffffff').attr('stroke-width', 2.5);
         setTooltip({ x: event.clientX + 8, y: event.clientY + 8, node: d });
       })
       .on('mouseout', function(_, d: any) {
+        hoveredNodeId = null;
+        updateLabelVisibility();
         d3.select(this)
           .attr('stroke', focusedNodeId === d.id ? '#ffffff' : '#0f1117')
           .attr('stroke-width', focusedNodeId === d.id ? 2.5 : 1.5);
@@ -201,10 +228,10 @@ export function KGExplorer() {
         focusNode(d, false);
       })
       .call((d3.drag<SVGCircleElement, any>()
-        .on('start', (event, d: any) => {
+        .on('start', function(event, d: any) {
           clearLayoutStopTimer();
           setLayoutRunning(true);
-          d3.select(event.sourceEvent.currentTarget).attr('cursor', 'grabbing');
+          d3.select(this).attr('cursor', 'grabbing');
           if (!event.active) {
             simulation
               .alpha(Math.max(simulation.alpha(), DRAG_REHEAT_ALPHA))
@@ -215,28 +242,58 @@ export function KGExplorer() {
           d.fx = d.x; d.fy = d.y;
         })
         .on('drag', (event, d: any) => { d.fx = event.x; d.fy = event.y; })
-        .on('end', (event, d: any) => {
-          d3.select(event.sourceEvent.currentTarget).attr('cursor', 'grab');
+        .on('end', function(event, d: any) {
+          d3.select(this).attr('cursor', 'grab');
           if (!event.active) simulation.alphaTarget(0);
           scheduleSimulationStop(LAYOUT_AFTER_DRAG_MS);
         })) as any);
 
-    // Labels for high-degree nodes
+    // Obsidian-style nearby labels: keep the overview readable, reveal more
+    // while zooming, and always show hovered or selected entity names.
     const label = g.append('g')
+      .attr('aria-hidden', 'true')
       .selectAll('text')
-      .data(simNodes.filter(n => n.degree >= 12))
+      .data(simNodes)
       .join('text')
-      .text((d: any) => d.name)
-      .attr('font-size', 10)
-      .attr('fill', 'var(--text-3)')
-      .attr('text-anchor', 'middle')
-      .attr('dy', (d: any) => -(getRadius(d.degree) + 6))
+      .attr('data-label-node-id', (d: any) => d.id)
+      .text((d: any) => compactLabel(d.name))
+      .attr('font-size', 9.5)
+      .attr('font-weight', 500)
+      .attr('fill', '#c9d1d9')
+      .attr('stroke', '#0f1117')
+      .attr('stroke-width', 3)
+      .attr('paint-order', 'stroke')
+      .attr('stroke-linejoin', 'round')
+      .attr('text-anchor', 'start')
+      .attr('dominant-baseline', 'middle')
       .attr('pointer-events', 'none');
+    labelSelection = label;
+
+    updateLabelVisibility = () => {
+      const visibleLabelCount = currentZoomScale < 0.65
+        ? Math.min(baseLabelCount, 12)
+        : currentZoomScale < 1.35
+          ? baseLabelCount
+          : currentZoomScale < 2.2
+            ? Math.min(simNodes.length, baseLabelCount * 2)
+            : simNodes.length;
+      labelSelection
+        ?.attr('display', (d: any) => {
+          const emphasized = d.id === hoveredNodeId || d.id === focusedNodeId;
+          return emphasized || (labelRank.get(d.id) ?? Number.MAX_SAFE_INTEGER) < visibleLabelCount
+            ? null
+            : 'none';
+        })
+        .attr('opacity', (d: any) => d.id === hoveredNodeId || d.id === focusedNodeId ? 1 : 0.72)
+        .attr('font-weight', (d: any) => d.id === hoveredNodeId || d.id === focusedNodeId ? 700 : 500);
+    };
+    updateLabelVisibility();
 
     // Click blank to reset
     svg.on('click', (event) => {
       if (event.target === svgRef.current) {
         focusedNodeId = null;
+        updateLabelVisibility();
         setSelectedNode(null);
         node
           .attr('opacity', 0.9)
@@ -257,8 +314,8 @@ export function KGExplorer() {
         .attr('cx', (d: any) => d.x)
         .attr('cy', (d: any) => d.y);
       label
-        .attr('x', (d: any) => d.x)
-        .attr('y', (d: any) => d.y);
+        .attr('x', (d: any) => d.x + getRadius(d.degree) + 4)
+        .attr('y', (d: any) => d.y + 1);
     };
     simulation.on('tick', renderTick);
     simulation.on('end', () => {
@@ -305,6 +362,7 @@ export function KGExplorer() {
 
     function focusNode(d: any, center: boolean) {
       focusedNodeId = d.id;
+      updateLabelVisibility();
       const selected = nodes.find(n => n.id === d.id) ?? d;
       setSelectedNode({ ...selected, degree: d.degree });
       node
