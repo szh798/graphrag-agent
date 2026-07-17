@@ -37,6 +37,7 @@ def neighbor_pairs(
     entities in source order, avoiding an O(n²) complete graph.
     """
     selected: set[tuple[int, str, str]] = set()
+    has_physical_pages = len(page_nodes) > 1
     for page_idx, positioned_nodes in page_nodes.items():
         positions: dict[str, int] = {}
         for position, node_id in positioned_nodes:
@@ -46,7 +47,11 @@ def neighbor_pairs(
             positions[node_id] = min(positions.get(node_id, position), position)
 
         ordered = sorted(positions, key=lambda node_id: (positions[node_id], node_id))
-        reach = len(ordered) - 1 if len(ordered) <= clique_limit else max_neighbors
+        reach = (
+            len(ordered) - 1
+            if has_physical_pages or len(ordered) <= clique_limit
+            else max_neighbors
+        )
         for index, source in enumerate(ordered):
             for target in ordered[index + 1: index + 1 + reach]:
                 left, right = sorted((source, target))
@@ -97,15 +102,21 @@ def select_sparse_layout_edges(nodes: list[dict], edges: list[dict]) -> list[dic
         if (doc_id, target) in scoped_node_map or target in node_map:
             page_node_ids[(doc_id, page_idx)].add(target)
 
-    allowed_pairs: set[tuple[str, int, str, str]] = set()
+    scoped_page_nodes: dict[str, dict[int, list[tuple[int, str]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for (doc_id, page_idx), node_ids in page_node_ids.items():
-        positioned_nodes: list[tuple[int, str]] = []
         for fallback, node_id in enumerate(sorted(node_ids)):
             node = scoped_node_map.get((doc_id, node_id)) or node_map[node_id]
-            positioned_nodes.append((_position(node.get("char_start"), fallback), node_id))
+            scoped_page_nodes[doc_id][page_idx].append(
+                (_position(node.get("char_start"), fallback), node_id)
+            )
+
+    allowed_pairs: set[tuple[str, int, str, str]] = set()
+    for doc_id, positioned_pages in scoped_page_nodes.items():
         allowed_pairs.update(
             (doc_id, pair_page, source, target)
-            for pair_page, source, target in neighbor_pairs({page_idx: positioned_nodes})
+            for pair_page, source, target in neighbor_pairs(positioned_pages)
         )
 
     selected: list[dict] = []

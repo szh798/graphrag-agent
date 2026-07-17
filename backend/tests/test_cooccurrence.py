@@ -96,6 +96,27 @@ class CooccurrenceTests(unittest.TestCase):
         self.assertEqual(len(selected), 140)
         self.assertEqual({edge["doc_id"] for edge in selected}, {"doc-1", "doc-2"})
 
+    def test_multi_page_document_keeps_physical_page_cliques(self):
+        from pipeline.cooccurrence import select_sparse_layout_edges
+
+        first_nodes, first_edges = _complete_graph(20, page=0)
+        second_nodes, second_edges = _complete_graph(20, page=1)
+        for index, node in enumerate(second_nodes):
+            old_id = node["id"]
+            new_id = f"p1-{index:03d}"
+            node["id"] = new_id
+            for edge in second_edges:
+                if edge["source"] == old_id:
+                    edge["source"] = new_id
+                if edge["target"] == old_id:
+                    edge["target"] = new_id
+
+        selected = select_sparse_layout_edges(
+            [*first_nodes, *second_nodes], [*first_edges, *second_edges]
+        )
+
+        self.assertEqual(len(selected), 380)
+
 
 if __name__ == "__main__":
     unittest.main()
