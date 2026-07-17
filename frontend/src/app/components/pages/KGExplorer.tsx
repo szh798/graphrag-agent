@@ -9,7 +9,9 @@ import { TYPE_COLORS } from '../../mock-data';
 const ENTITY_TYPES = ['TECHNOLOGY', 'CONCEPT', 'PERSON', 'ORGANIZATION', 'LOCATION'] as const;
 const CONFIDENCE_LEVELS = ['match_exact', 'match_greater', 'match_lesser', 'match_fuzzy'] as const;
 const LAYOUT_MAX_RUNTIME_MS = 4_000;
-const LAYOUT_AFTER_DRAG_MS = 1_200;
+const LAYOUT_AFTER_DRAG_MS = 1_600;
+const DRAG_REHEAT_ALPHA = 0.12;
+const DRAG_ALPHA_TARGET = 0.03;
 
 export function KGExplorer() {
   const { nodes, edges, documents, selectedNode, setSelectedNode, getNeighbors } = useAppState();
@@ -131,7 +133,7 @@ export function KGExplorer() {
       .attr('stroke', '#0f1117')
       .attr('stroke-width', 1.5)
       .attr('opacity', 0.9)
-      .attr('cursor', 'pointer')
+      .attr('cursor', 'grab')
       .on('mouseover', function(event, d: any) {
         d3.select(this).attr('stroke', '#ffffff').attr('stroke-width', 2.5);
         setTooltip({ x: event.clientX + 8, y: event.clientY + 8, node: d });
@@ -149,11 +151,19 @@ export function KGExplorer() {
         .on('start', (event, d: any) => {
           clearLayoutStopTimer();
           setLayoutRunning(true);
-          if (!event.active) simulation.alphaTarget(0.3).restart();
+          d3.select(event.sourceEvent.currentTarget).attr('cursor', 'grabbing');
+          if (!event.active) {
+            simulation
+              .alpha(Math.max(simulation.alpha(), DRAG_REHEAT_ALPHA))
+              .alphaTarget(DRAG_ALPHA_TARGET)
+              .restart();
+          }
+          d.vx = 0; d.vy = 0;
           d.fx = d.x; d.fy = d.y;
         })
         .on('drag', (event, d: any) => { d.fx = event.x; d.fy = event.y; })
         .on('end', (event, d: any) => {
+          d3.select(event.sourceEvent.currentTarget).attr('cursor', 'grab');
           if (!event.active) simulation.alphaTarget(0);
           scheduleSimulationStop(LAYOUT_AFTER_DRAG_MS);
         })) as any);
