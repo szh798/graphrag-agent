@@ -18,6 +18,10 @@ Vercel 与 GitHub Actions 必须配置同一个 `INDEX_DISPATCH_SECRET`。该密
 
 所有后端异常会以 request ID 聚合到 `ops_events`。设置 `OPS_ALERT_WEBHOOK_URL` 后，错误级事件还会投递到外部告警系统。Webhook 接收端应验证来源、限流并避免记录请求正文或凭据。
 
+飞书自定义机器人地址会被自动识别，并以包含 `GraphRAG` 关键词的文本消息发送；生产环境保持 `OPS_ALERT_WEBHOOK_PROVIDER=auto` 即可。飞书机器人应启用关键词校验并设置关键词 `GraphRAG`。通用 Webhook 接收端可将 provider 显式设为 `generic`，此时收到的 JSON 只包含事件类型、来源、request ID、租户/操作者标识、脱敏说明和安全上下文，不包含问题、回答、Cookie 或凭据。
+
+Webhook 地址等同于发送凭据，只能配置在 Vercel Production 环境变量中，不得写入 `.env.example`、日志或 Git。修改生产环境变量后必须重新部署，并用一条可识别的测试告警确认飞书响应体中的业务状态为成功；HTTP 200 本身不足以证明投递成功。
+
 ## 4. 数据备份
 
 Neon 的即时恢复窗口必须在控制台的 **Backup & Restore / Restore window** 中确认；不同套餐可用窗口不同，不能仅凭数据库连接成功推断已开启。核对后设置：

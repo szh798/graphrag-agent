@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -16,6 +18,67 @@ from storage.account_repository import get_account_repository
 logger = logging.getLogger("graphrag.operations")
 
 
+def _alert_webhook_provider(webhook_url: str) -> str:
+    configured = os.getenv("OPS_ALERT_WEBHOOK_PROVIDER", "auto").strip().lower()
+    if configured not in {"", "auto"}:
+        return "feishu" if configured == "lark" else configured
+
+    hostname = (urlparse(webhook_url).hostname or "").lower()
+    if hostname in {"open.feishu.cn", "open.larksuite.com"}:
+        return "feishu"
+    return "generic"
+
+
+def _alert_text(log_payload: dict[str, Any], event_id: str | None) -> str:
+    """Render a concise alert without request bodies, credentials, or answers."""
+    lines = [
+        "GraphRAG 生产告警",
+        f"时间：{datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"级别：{str(log_payload['level']).upper()}",
+        f"事件：{log_payload['event']}",
+        f"来源：{log_payload['source']}",
+        f"说明：{log_payload['message']}",
+        f"Request ID：{log_payload['request_id']}",
+    ]
+    if event_id:
+        lines.append(f"Event ID：{event_id}")
+    if log_payload.get("tenant_id"):
+        lines.append(f"Tenant ID：{log_payload['tenant_id']}")
+    if log_payload.get("context"):
+        context = json.dumps(log_payload["context"], ensure_ascii=False, default=str, separators=(",", ":"))
+        lines.append(f"上下文：{context[:1500]}")
+    return "\n".join(lines)
+
+
+def _alert_webhook_payload(
+    webhook_url: str,
+    log_payload: dict[str, Any],
+    event_id: str | None,
+) -> tuple[str, dict[str, Any]]:
+    provider = _alert_webhook_provider(webhook_url)
+    if provider == "feishu":
+        return provider, {
+            "msg_type": "text",
+            "content": {"text": _alert_text(log_payload, event_id)},
+        }
+    return provider, {**log_payload, "event_id": event_id}
+
+
+def _validate_alert_response(response: requests.Response, provider: str) -> None:
+    response.raise_for_status()
+    if provider != "feishu":
+        return
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Feishu alert returned an invalid response") from exc
+
+    code = body.get("code", body.get("StatusCode")) if isinstance(body, dict) else None
+    if code not in {0, "0"}:
+        raise RuntimeError("Feishu alert delivery was rejected")
+
+
 def operational_readiness() -> dict[str, Any]:
     """Describe production controls without exposing any secret values."""
     auth = clerk_configuration_profile()
@@ -24,6 +87,7 @@ def operational_readiness() -> dict[str, Any]:
     except ValueError:
         retention_hours = 0
     pitr_ready = os.getenv("DATABASE_PITR_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"} and retention_hours > 0
+    alert_webhook_url = os.getenv("OPS_ALERT_WEBHOOK_URL", "").strip()
     checks = {
         "authentication": {
             "ready": bool(auth["production_ready"]),
@@ -31,8 +95,9 @@ def operational_readiness() -> dict[str, Any]:
             "message": "正式身份服务已启用" if auth["production_ready"] else "仍在使用测试身份服务，请切换 Clerk Production 密钥",
         },
         "alert_delivery": {
-            "ready": bool(os.getenv("OPS_ALERT_WEBHOOK_URL", "").strip()),
-            "message": "异常告警 webhook 已配置" if os.getenv("OPS_ALERT_WEBHOOK_URL", "").strip() else "异常会记录到运维面板，但尚未配置外部告警 webhook",
+            "ready": bool(alert_webhook_url),
+            "provider": _alert_webhook_provider(alert_webhook_url) if alert_webhook_url else None,
+            "message": "异常告警 webhook 已配置" if alert_webhook_url else "异常会记录到运维面板，但尚未配置外部告警 webhook",
         },
         "database_recovery": {
             "ready": pitr_ready,
@@ -107,7 +172,9 @@ def report_event(
     webhook_url = os.getenv("OPS_ALERT_WEBHOOK_URL", "").strip()
     if webhook_url and severity == "error":
         try:
-            requests.post(webhook_url, json={**log_payload, "event_id": event_id}, timeout=3).raise_for_status()
+            provider, webhook_payload = _alert_webhook_payload(webhook_url, log_payload, event_id)
+            response = requests.post(webhook_url, json=webhook_payload, timeout=3)
+            _validate_alert_response(response, provider)
         except Exception as webhook_error:
             logger.error(
                 json.dumps(
