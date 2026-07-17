@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import * as d3 from 'd3';
-import { ZoomIn, ZoomOut, Maximize2, Search, Download, Image, X, MessageSquare, FileText, Share2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, Search, Download, Image, X, MessageSquare, FileText, Share2, Pause, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAppState, type KGNode } from '../../store';
 import { TYPE_COLORS } from '../../mock-data';
 
 const ENTITY_TYPES = ['TECHNOLOGY', 'CONCEPT', 'PERSON', 'ORGANIZATION', 'LOCATION'] as const;
 const CONFIDENCE_LEVELS = ['match_exact', 'match_greater', 'match_lesser', 'match_fuzzy'] as const;
+const LAYOUT_MAX_RUNTIME_MS = 4_000;
+const LAYOUT_AFTER_DRAG_MS = 1_200;
 
 export function KGExplorer() {
   const { nodes, edges, documents, selectedNode, setSelectedNode, getNeighbors } = useAppState();
@@ -17,6 +19,7 @@ export function KGExplorer() {
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<d3.Simulation<any, any> | null>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const layoutStopTimerRef = useRef<number | null>(null);
 
   const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set(ENTITY_TYPES));
   const [filterConfidence, setFilterConfidence] = useState<Set<string>>(new Set(CONFIDENCE_LEVELS));
@@ -25,6 +28,7 @@ export function KGExplorer() {
   const [showFilter, setShowFilter] = useState(true);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; node: KGNode } | null>(null);
   const [showAllNeighbors, setShowAllNeighbors] = useState(false);
+  const [layoutRunning, setLayoutRunning] = useState(false);
 
   const indexedDocs = documents.filter(d => d.status === 'indexed');
 
@@ -87,6 +91,25 @@ export function KGExplorer() {
       .alphaDecay(0.02);
 
     simulationRef.current = simulation;
+    setLayoutRunning(true);
+
+    const clearLayoutStopTimer = () => {
+      if (layoutStopTimerRef.current !== null) {
+        window.clearTimeout(layoutStopTimerRef.current);
+        layoutStopTimerRef.current = null;
+      }
+    };
+    const stopSimulation = () => {
+      clearLayoutStopTimer();
+      simulation.alphaTarget(0).stop();
+      if (simulationRef.current === simulation) setLayoutRunning(false);
+    };
+    const scheduleSimulationStop = (delay: number) => {
+      clearLayoutStopTimer();
+      layoutStopTimerRef.current = window.setTimeout(stopSimulation, delay);
+    };
+    scheduleSimulationStop(LAYOUT_MAX_RUNTIME_MS);
+    window.addEventListener('blur', stopSimulation);
 
     // Edges
     const link = g.append('g')
@@ -124,12 +147,15 @@ export function KGExplorer() {
       })
       .call((d3.drag<SVGCircleElement, any>()
         .on('start', (event, d: any) => {
+          clearLayoutStopTimer();
+          setLayoutRunning(true);
           if (!event.active) simulation.alphaTarget(0.3).restart();
           d.fx = d.x; d.fy = d.y;
         })
         .on('drag', (event, d: any) => { d.fx = event.x; d.fy = event.y; })
         .on('end', (event, d: any) => {
           if (!event.active) simulation.alphaTarget(0);
+          scheduleSimulationStop(LAYOUT_AFTER_DRAG_MS);
         })) as any);
 
     // Labels for high-degree nodes
@@ -170,6 +196,10 @@ export function KGExplorer() {
       label
         .attr('x', (d: any) => d.x)
         .attr('y', (d: any) => d.y);
+    });
+    simulation.on('end', () => {
+      clearLayoutStopTimer();
+      if (simulationRef.current === simulation) setLayoutRunning(false);
     });
 
     if (nodeParam) {
@@ -228,8 +258,36 @@ export function KGExplorer() {
       }
     }
 
-    return () => { simulation.stop(); };
+    return () => {
+      clearLayoutStopTimer();
+      window.removeEventListener('blur', stopSimulation);
+      simulation.stop();
+      if (simulationRef.current === simulation) simulationRef.current = null;
+    };
   }, [visibleNodeKey, visibleEdgeKey, filterTypeKey, filterConfidenceKey, searchQuery, filterDoc, nodeParam, docParam, nodes, setSelectedNode]);
+
+  const handleToggleLayout = () => {
+    const simulation = simulationRef.current;
+    if (!simulation) return;
+    if (layoutStopTimerRef.current !== null) {
+      window.clearTimeout(layoutStopTimerRef.current);
+      layoutStopTimerRef.current = null;
+    }
+
+    if (layoutRunning) {
+      simulation.alphaTarget(0).stop();
+      setLayoutRunning(false);
+      return;
+    }
+
+    simulation.alpha(0.25).alphaTarget(0).restart();
+    setLayoutRunning(true);
+    layoutStopTimerRef.current = window.setTimeout(() => {
+      simulation.alphaTarget(0).stop();
+      setLayoutRunning(false);
+      layoutStopTimerRef.current = null;
+    }, LAYOUT_MAX_RUNTIME_MS);
+  };
 
   const handleZoomIn = () => {
     if (svgRef.current && zoomRef.current) {
@@ -456,9 +514,20 @@ export function KGExplorer() {
       <div ref={containerRef} className="flex-1 relative" style={{ overflow: 'hidden' }}>
         {/* Toolbar */}
         <div className="absolute top-3 left-3 flex items-center gap-1.5 rounded-md p-1" style={{ background: 'var(--bg-s1)', border: '1px solid var(--border-main)', zIndex: 10 }}>
-          <button onClick={handleZoomIn} className="p-1.5 rounded cursor-pointer" style={{ background: 'transparent', border: 'none', color: 'var(--text-3)' }}><ZoomIn size={16} /></button>
-          <button onClick={handleZoomOut} className="p-1.5 rounded cursor-pointer" style={{ background: 'transparent', border: 'none', color: 'var(--text-3)' }}><ZoomOut size={16} /></button>
-          <button onClick={handleFitAll} className="p-1.5 rounded cursor-pointer" style={{ background: 'transparent', border: 'none', color: 'var(--text-3)' }}><Maximize2 size={16} /></button>
+          <button type="button" aria-label="放大图谱" title="放大" onClick={handleZoomIn} className="p-1.5 rounded cursor-pointer" style={{ background: 'transparent', border: 'none', color: 'var(--text-3)' }}><ZoomIn size={16} /></button>
+          <button type="button" aria-label="缩小图谱" title="缩小" onClick={handleZoomOut} className="p-1.5 rounded cursor-pointer" style={{ background: 'transparent', border: 'none', color: 'var(--text-3)' }}><ZoomOut size={16} /></button>
+          <button type="button" aria-label="适应全部图谱" title="适应全部" onClick={handleFitAll} className="p-1.5 rounded cursor-pointer" style={{ background: 'transparent', border: 'none', color: 'var(--text-3)' }}><Maximize2 size={16} /></button>
+          <button
+            type="button"
+            aria-label={layoutRunning ? '暂停图谱布局' : '重新计算图谱布局'}
+            title={layoutRunning ? '暂停布局' : '重新布局'}
+            onClick={handleToggleLayout}
+            className="flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', fontSize: 11 }}
+          >
+            {layoutRunning ? <Pause size={14} /> : <RefreshCw size={14} />}
+            <span>{layoutRunning ? '暂停' : '重新布局'}</span>
+          </button>
           <div style={{ width: 1, height: 20, background: 'var(--border-main)' }} />
           <div className="relative">
             <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-4)' }} />

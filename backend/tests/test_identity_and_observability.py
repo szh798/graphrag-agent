@@ -82,7 +82,7 @@ class DocumentVisibilityTests(unittest.TestCase):
             "blob_key": "uploads/notes.md",
         })
 
-        self.assertEqual(payload, {"doc_id": "doc-1", "filename": "notes.md"})
+        self.assertEqual(payload, {"doc_id": "doc-1", "filename": "notes.md", "pages": 1})
 
 
 class RequestIdTests(unittest.TestCase):

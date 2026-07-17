@@ -25,6 +25,7 @@ ALLOWED_EXTENSIONS = {
     "md",
     "markdown",
 }
+INTRINSIC_SINGLE_PAGE_EXTENSIONS = {"png", "jpg", "jpeg", "txt", "md", "markdown"}
 MAX_FILE_SIZE_MB = 200
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
@@ -58,6 +59,12 @@ _OLE_PREFIX = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 def public_document(doc: dict) -> dict:
     """Return a frontend/API-safe document payload."""
     item = dict(doc)
+    file_format = str(item.get("format") or Path(str(item.get("filename") or "")).suffix.lstrip(".")).lower()
+    if item.get("pages") is None and file_format in INTRINSIC_SINGLE_PAGE_EXTENSIONS:
+        # Text/Markdown and image uploads are represented as one logical page
+        # by the local parser. This also repairs legacy rows created before the
+        # page count was persisted at upload time.
+        item["pages"] = 1
     uploaded_at = item.get("uploaded_at") or item.get("upload_date")
     if uploaded_at:
         item["uploaded_at"] = uploaded_at
@@ -160,7 +167,7 @@ def _save_document_record(
         "filename": filename,
         "format": ext,
         "size_bytes": size_bytes,
-        "pages": None,
+        "pages": 1 if ext in INTRINSIC_SINGLE_PAGE_EXTENSIONS else None,
         "uploaded_at": uploaded_at,
         "upload_date": uploaded_at,
         "status": "uploaded",

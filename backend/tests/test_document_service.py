@@ -46,6 +46,43 @@ class DocumentServiceTests(unittest.TestCase):
         for key in ("upload_filename", "blob_key", "blob_url", "blob_ref"):
             self.assertNotIn(key, result)
 
+    def test_public_document_repairs_missing_markdown_page_count(self):
+        from services.document_service import public_document
+
+        result = public_document({
+            "doc_id": "doc_markdown",
+            "filename": "architecture.md",
+            "format": "md",
+            "pages": None,
+            "status": "indexed",
+        })
+
+        self.assertEqual(result["pages"], 1)
+
+    def test_new_markdown_upload_starts_with_one_logical_page(self):
+        from services import document_service as svc
+
+        saved = []
+
+        class FakeRepo:
+            def save_document(self, doc):
+                saved.append(doc)
+
+        with patch.object(svc.app_store, "get_app_repository", return_value=FakeRepo()):
+            doc = svc._save_document_record(
+                doc_id="doc_markdown",
+                filename="architecture.md",
+                size_bytes=128,
+                language="ch",
+                enable_formula=True,
+                enable_table=True,
+                upload_filename="doc_markdown_architecture.md",
+                blob_ref={"key": "uploads/doc_markdown_architecture.md"},
+            )
+
+        self.assertEqual(doc["pages"], 1)
+        self.assertEqual(saved[0]["pages"], 1)
+
     def test_upload_content_checks_mime_and_magic(self):
         from services.document_service import validate_upload_content
 
