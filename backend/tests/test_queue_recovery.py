@@ -88,6 +88,31 @@ class DurableQueueRecoveryTests(unittest.TestCase):
         self.assertEqual(acknowledged[0]["_queue_receipt"], "receipt")
         self.assertTrue(saved)
 
+    def test_worker_acks_claim_when_job_runner_raises(self):
+        from services import indexing_service as service
+
+        acknowledged: list[dict] = []
+
+        class QueueRepo:
+            def recover_expired_jobs(self):
+                return {"recovered": [], "exhausted": []}
+
+            def pop_index_job(self, _timeout_seconds):
+                return {"job_id": "job_broken", "_queue_receipt": "receipt"}
+
+            def ack_index_job(self, payload):
+                acknowledged.append(dict(payload))
+
+        with (
+            patch.object(service.queue_store, "get_queue_repository", return_value=QueueRepo()),
+            patch.object(service.app_store, "get_app_repository"),
+            patch.object(service, "run_queued_job", side_effect=RuntimeError("boom")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                service.process_next_index_job(1)
+
+        self.assertEqual(acknowledged[0]["_queue_receipt"], "receipt")
+
 
 if __name__ == "__main__":
     unittest.main()

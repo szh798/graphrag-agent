@@ -101,7 +101,7 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(saved[0]["pages"], 1)
 
     def test_upload_content_checks_mime_and_magic(self):
-        from services.document_service import validate_upload_content
+        from services.document_service import detect_supported_image_format, validate_upload_content
 
         valid_pdf = validate_upload_content("demo.pdf", "application/pdf", b"%PDF-1.7\n", 9)
         wrong_magic = validate_upload_content("demo.pdf", "application/pdf", b"not a pdf", 9)
@@ -110,6 +110,9 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertTrue(valid_pdf[0])
         self.assertEqual(wrong_magic[1], 1002)
         self.assertEqual(wrong_mime[1], 1002)
+        self.assertEqual(detect_supported_image_format(b"\x89PNG\r\n\x1a\nrest"), ("png", "image/png"))
+        self.assertEqual(detect_supported_image_format(b"\xff\xd8\xffrest"), ("jpg", "image/jpeg"))
+        self.assertIsNone(detect_supported_image_format(b"not-an-image"))
 
     def test_upload_reader_stops_when_stream_exceeds_limit(self):
         from routers import documents

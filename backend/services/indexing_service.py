@@ -193,6 +193,21 @@ def _job_input_path(job_id: str, doc: dict, fallback_path: Path) -> Path:
                 head,
                 size_bytes,
             )
+        declared_ext = Path(str(doc.get("filename") or "")).suffix.lower().lstrip(".")
+        detected_image = document_service.detect_supported_image_format(head)
+        if not ok and declared_ext in {"png", "jpg", "jpeg"} and detected_image:
+            actual_ext, actual_mime = detected_image
+            actual_filename = f"{Path(str(doc.get('filename') or 'image')).stem}.{actual_ext}"
+            ok, _, message = document_service.validate_upload_content(
+                actual_filename,
+                actual_mime,
+                head,
+                size_bytes,
+            )
+            if ok and downloaded.suffix.lower() != f".{actual_ext}":
+                corrected_path = downloaded.with_suffix(f".{actual_ext}")
+                downloaded.replace(corrected_path)
+                downloaded = corrected_path
         if not ok:
             downloaded.unlink(missing_ok=True)
             raise ValueError(f"Downloaded upload validation failed: {message}")
@@ -211,11 +226,12 @@ def _run_pipeline(job_id: str) -> None:
         _update_meta(job_id, status="failed", stage=f"Error: Document '{doc_id}' not found", error=f"Document '{doc_id}' not found")
         return
 
-    pdf_path = _job_input_path(job_id, doc, Path(meta["pdf_path"]))
     job_dir = fs.job_dir(job_id)
     start_time = time.time()
 
     try:
+        pdf_path = _job_input_path(job_id, doc, Path(meta["pdf_path"]))
+
         # ── Stage 1: parsing ──────────────────────────────────────────────
         if _is_cancelled(job_id):
             _update_meta(job_id, status="cancelled", stage="Cancelled")
@@ -466,6 +482,7 @@ def process_next_index_job(timeout_seconds: int = 5) -> dict | None:
     payload = queue_repo.pop_index_job(timeout_seconds)
     if not payload:
         return None
-    result = run_queued_job(payload["job_id"])
-    getattr(queue_repo, "ack_index_job", lambda _payload: None)(payload)
-    return result
+    try:
+        return run_queued_job(payload["job_id"])
+    finally:
+        getattr(queue_repo, "ack_index_job", lambda _payload: None)(payload)

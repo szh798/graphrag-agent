@@ -88,6 +88,68 @@ def _run_pipeline_with_doc(env: dict[str, str]):
 
 
 class IndexingServiceLocalParserTests(unittest.TestCase):
+    def test_downloaded_image_uses_detected_format_when_extension_is_wrong(self):
+        from services import indexing_service as idx
+
+        png = b"\x89PNG\r\n\x1a\n" + b"payload"
+
+        class BlobRepo:
+            def download_to_path(self, _blob_ref, target):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(png)
+                return target
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(idx.fs, "job_dir", return_value=root),
+                patch.object(idx.blob_store, "get_blob_repository", return_value=BlobRepo()),
+            ):
+                result = idx._job_input_path("job_image", {
+                    "doc_id": "doc_image",
+                    "filename": "resume.jpg",
+                    "content_type": "image/jpeg",
+                    "blob_ref": {"key": "uploads/resume.jpg"},
+                }, root / "fallback.jpg")
+
+            self.assertEqual(result.suffix, ".png")
+            self.assertEqual(result.read_bytes(), png)
+            self.assertFalse(result.with_suffix(".jpg").exists())
+
+    def test_input_validation_failure_marks_job_failed(self):
+        from services import indexing_service as idx
+
+        meta = {
+            "job_id": "job_invalid",
+            "doc_id": "doc_invalid",
+            "status": "queued",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "pdf_path": "/tmp/missing.jpg",
+        }
+
+        class AppRepo:
+            def load_job_meta(self, _job_id):
+                return dict(meta)
+
+            def save_job_meta(self, _job_id, next_meta):
+                meta.clear()
+                meta.update(next_meta)
+
+            def get_document(self, _doc_id):
+                return {"doc_id": "doc_invalid", "filename": "invalid.jpg"}
+
+        with (
+            patch.object(idx.app_store, "get_app_repository", return_value=AppRepo()),
+            patch.object(idx.fs, "job_dir", return_value=Path("/tmp/job_invalid")),
+            patch.object(idx, "_job_input_path", side_effect=ValueError("invalid image signature")),
+            patch.object(idx, "update_doc_status") as update_doc_status,
+        ):
+            idx._run_pipeline("job_invalid")
+
+        self.assertEqual(meta["status"], "failed")
+        self.assertEqual(meta["error"], "invalid image signature")
+        update_doc_status.assert_called_once_with("doc_invalid", "failed")
+
     def test_text_formats_use_local_parser_even_when_mineru_is_configured(self):
         from services import indexing_service as idx
 

@@ -57,6 +57,15 @@ _ZIP_PREFIXES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 _OLE_PREFIX = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
+def detect_supported_image_format(head: bytes) -> tuple[str, str] | None:
+    """Return the real supported image extension and MIME from its signature."""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png", "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpg", "image/jpeg"
+    return None
+
+
 def normalize_document_status(status: object) -> str:
     """Map internal job states onto the stable public document contract."""
     value = str(status or "").strip().lower()
