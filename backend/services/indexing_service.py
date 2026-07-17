@@ -132,7 +132,9 @@ def start_indexing(doc_id: str) -> dict:
         queue_repo.enqueue_index_job({"job_id": job_id, "doc_id": doc_id})
         update_status = getattr(app_repo, "update_document_status", None)
         if callable(update_status):
-            update_status(doc_id, "queued")
+            # Job state may be queued/submitted/parsing, but the document API
+            # intentionally exposes one stable in-progress state.
+            update_status(doc_id, "indexing")
         return meta
 
     _cancel_flags[job_id] = False
@@ -408,6 +410,10 @@ def cancel_job(job_id: str) -> tuple[bool, str]:
     prev_status = meta["status"]
     _cancel_flags[job_id] = True
     _update_meta(job_id, status="cancelled", stage="Cancelled by user")
+    doc_id = str(meta.get("doc_id") or "")
+    update_status = getattr(app_store.get_app_repository(), "update_document_status", None)
+    if doc_id and callable(update_status):
+        update_status(doc_id, "uploaded")
     return True, prev_status
 
 

@@ -6,14 +6,7 @@ import { useAppState, type Document } from '../../store';
 import { api, ApiError, type ApiDocumentExtractions, type ApiIndexResult } from '../../api';
 import { useAuthRuntime } from '../../auth';
 import { uploadDocumentDirect } from '../../direct-upload';
-import { documentStatusLabel } from '../../document-status';
-
-const statusStyles: Record<string, { bg: string; color: string }> = {
-  indexed:  { bg: '#1a3a22', color: '#3fb950' },
-  indexing: { bg: '#2d2a16', color: '#d29922' },
-  uploaded: { bg: '#1c2128', color: '#8b949e' },
-  failed:   { bg: '#3b1a1a', color: '#f85149' },
-};
+import { documentStatusLabel, documentStatusStyles } from '../../document-status';
 
 export function Documents() {
   const { documents, setDocuments, refreshDocuments } = useAppState();
@@ -243,7 +236,7 @@ export function Documents() {
           </div>
         ) : (
           filteredDocs.map(doc => {
-            const st = statusStyles[doc.status];
+            const st = documentStatusStyles[doc.status] ?? documentStatusStyles.unknown;
             const isExpanded = expandedDoc === doc.id;
             return (
               <React.Fragment key={doc.id}>

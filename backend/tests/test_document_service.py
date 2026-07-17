@@ -59,6 +59,23 @@ class DocumentServiceTests(unittest.TestCase):
 
         self.assertEqual(result["pages"], 1)
 
+    def test_public_document_normalizes_internal_job_states(self):
+        from services.document_service import public_document
+
+        expected = {
+            "submitted": "indexing",
+            "queued": "indexing",
+            "parsing": "indexing",
+            "extracting": "indexing",
+            "done": "indexed",
+            "cancelled": "uploaded",
+            "unexpected": "unknown",
+        }
+        for internal_status, public_status in expected.items():
+            with self.subTest(internal_status=internal_status):
+                result = public_document({"filename": "demo.pdf", "status": internal_status})
+                self.assertEqual(result["status"], public_status)
+
     def test_new_markdown_upload_starts_with_one_logical_page(self):
         from services import document_service as svc
 

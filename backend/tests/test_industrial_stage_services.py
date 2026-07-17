@@ -51,6 +51,7 @@ class IndustrialStageServiceTests(unittest.TestCase):
         }
         saved_jobs: list[dict] = []
         queued_jobs: list[dict] = []
+        document_statuses: list[tuple[str, str]] = []
 
         class StubAppRepo:
             def get_document(self, doc_id):
@@ -58,6 +59,9 @@ class IndustrialStageServiceTests(unittest.TestCase):
 
             def save_job_meta(self, job_id, meta):
                 saved_jobs.append(dict(meta))
+
+            def update_document_status(self, doc_id, status, pages=None):
+                document_statuses.append((doc_id, status))
 
         class StubQueueRepo:
             def is_durable(self):
@@ -76,6 +80,7 @@ class IndustrialStageServiceTests(unittest.TestCase):
         self.assertEqual(meta["status"], "queued")
         self.assertEqual(saved_jobs[0]["status"], "queued")
         self.assertEqual(queued_jobs[0]["job_id"], meta["job_id"])
+        self.assertEqual(document_statuses, [("doc_1", "indexing")])
         thread_cls.assert_not_called()
 
     def test_indexing_attaches_embeddings_for_neo4j_graph_backend(self):

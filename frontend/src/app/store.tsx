@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import { api, type ApiDoc, type ApiKGNode, type ApiKGEdge, type ApiChatSessionSummary, type ApiIndexResult, ApiError } from './api';
 import { useAuthRuntime } from './auth';
+import { normalizeDocumentStatus, type DocumentStatus } from './document-status';
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ export interface Document {
   filename: string;
   format: string;
   pages: number;
-  status: 'uploaded' | 'indexing' | 'indexed' | 'failed';
+  status: DocumentStatus;
   upload_date: string;
   job_id?: string;
   index_stage?: string;
@@ -107,7 +108,7 @@ function mapApiDoc(d: ApiDoc): Document {
     filename: d.filename,
     format: d.format,
     pages: d.pages ?? 0,
-    status: d.status,
+    status: normalizeDocumentStatus(d.status),
     upload_date: uploadedAt,
     job_id: d.job_id ?? undefined,
     error: d.error_msg ?? undefined,

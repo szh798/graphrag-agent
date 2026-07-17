@@ -1,10 +1,12 @@
 import { createBrowserRouter, Navigate } from 'react-router';
 import { AppLayout } from './components/layout/AppLayout';
+import { RouteErrorPage } from './components/RouteErrorPage';
 
 export const router = createBrowserRouter([
   {
     path: '/',
     Component: AppLayout,
+    errorElement: <RouteErrorPage />,
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: 'dashboard', lazy: async () => ({ Component: (await import('./components/pages/Dashboard')).Dashboard }) },

@@ -91,7 +91,7 @@ export interface ApiDoc {
   filename: string;
   format: string;
   pages: number | null;
-  status: 'uploaded' | 'indexing' | 'indexed' | 'failed';
+  status: string;
   uploaded_at?: string;
   upload_date?: string;
   job_id?: string | null;

@@ -2,7 +2,7 @@ import React from 'react';
 import { useNavigate } from 'react-router';
 import { Share2, MessageSquare, Search, Zap, FileText, ExternalLink, UploadCloud } from 'lucide-react';
 import { useAppState } from '../../store';
-import { documentStatusLabel } from '../../document-status';
+import { documentStatusLabel, documentStatusStyles } from '../../document-status';
 
 const statCards = [
   { key: 'kg_nodes', label: '图谱节点', color: '#58a6ff', icon: '◈' },
@@ -10,13 +10,6 @@ const statCards = [
   { key: 'documents', label: '文档数', color: '#3fb950', icon: '▤' },
   { key: 'queries', label: '查询次数', color: '#d29922', icon: '◆' },
 ] as const;
-
-const statusStyles: Record<string, { bg: string; color: string }> = {
-  indexed: { bg: '#1a3a22', color: '#3fb950' },
-  indexing: { bg: '#2d2a16', color: '#d29922' },
-  uploaded: { bg: '#1c2128', color: '#8b949e' },
-  failed: { bg: '#3b1a1a', color: '#f85149' },
-};
 
 export function Dashboard() {
   const { stats, health, documents } = useAppState();
@@ -137,7 +130,7 @@ export function Dashboard() {
             </div>
 
             {recentDocs.map(doc => {
-              const st = statusStyles[doc.status];
+              const st = documentStatusStyles[doc.status] ?? documentStatusStyles.unknown;
               return (
                 <div
                   key={doc.id}

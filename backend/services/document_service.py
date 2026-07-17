@@ -28,6 +28,7 @@ ALLOWED_EXTENSIONS = {
 INTRINSIC_SINGLE_PAGE_EXTENSIONS = {"png", "jpg", "jpeg", "txt", "md", "markdown"}
 MAX_FILE_SIZE_MB = 200
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+_INDEXING_DOCUMENT_STATUSES = {"submitted", "queued", "parsing", "extracting", "indexing"}
 
 _GENERIC_MIME_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 _ALLOWED_MIME_TYPES = {
@@ -56,9 +57,25 @@ _ZIP_PREFIXES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 _OLE_PREFIX = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
+def normalize_document_status(status: object) -> str:
+    """Map internal job states onto the stable public document contract."""
+    value = str(status or "").strip().lower()
+    if value in _INDEXING_DOCUMENT_STATUSES:
+        return "indexing"
+    if value in {"done", "indexed"}:
+        return "indexed"
+    if value in {"cancelled", "uploaded"}:
+        return "uploaded"
+    if value == "failed":
+        return "failed"
+    return "unknown"
+
+
 def public_document(doc: dict) -> dict:
     """Return a frontend/API-safe document payload."""
     item = dict(doc)
+    if "status" in item:
+        item["status"] = normalize_document_status(item.get("status"))
     file_format = str(item.get("format") or Path(str(item.get("filename") or "")).suffix.lstrip(".")).lower()
     if item.get("pages") is None and file_format in INTRINSIC_SINGLE_PAGE_EXTENSIONS:
         # Text/Markdown and image uploads are represented as one logical page
@@ -249,7 +266,7 @@ def list_documents(page: int = 1, page_size: int = 20,
     if allowed_ids is not None:
         items = [d for d in items if d.get("doc_id") in allowed_ids]
     if status:
-        items = [d for d in items if d.get("status") == status]
+        items = [d for d in items if normalize_document_status(d.get("status")) == status]
     if fmt:
         items = [d for d in items if d.get("format") == fmt.lower()]
     total = len(items)
