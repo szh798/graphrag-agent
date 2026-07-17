@@ -270,7 +270,8 @@ def get_document(doc_id: str) -> dict | None:
 def list_documents(page: int = 1, page_size: int = 20,
                    status: str | None = None, fmt: str | None = None,
                    allowed_ids: set[str] | None = None) -> dict:
-    items = app_store.get_app_repository().list_documents()
+    app_repo = app_store.get_app_repository()
+    items = app_repo.list_documents()
     items.sort(key=lambda d: d.get("uploaded_at", ""), reverse=True)
     if allowed_ids is not None:
         items = [d for d in items if d.get("doc_id") in allowed_ids]
@@ -280,11 +281,32 @@ def list_documents(page: int = 1, page_size: int = 20,
         items = [d for d in items if d.get("format") == fmt.lower()]
     total = len(items)
     start = (page - 1) * page_size
+    latest_jobs: dict[str, dict] = {}
+    for meta in app_repo.list_all_jobs():
+        doc_id = str(meta.get("doc_id") or "")
+        if not doc_id:
+            continue
+        current = latest_jobs.get(doc_id)
+        if current is None or str(meta.get("created_at") or "") > str(current.get("created_at") or ""):
+            latest_jobs[doc_id] = meta
+
+    public_items: list[dict] = []
+    for item in items[start: start + page_size]:
+        public_item = public_document(item)
+        latest_job = latest_jobs.get(str(item.get("doc_id") or ""))
+        if latest_job and public_item.get("status") == "indexing":
+            job_status = str(latest_job.get("status") or "").strip().lower()
+            if job_status in _INDEXING_DOCUMENT_STATUSES:
+                public_item["job_id"] = latest_job.get("job_id")
+        if latest_job and public_item.get("status") == "failed" and latest_job.get("status") == "failed":
+            public_item["error_msg"] = latest_job.get("error") or latest_job.get("stage")
+        public_items.append(public_item)
+
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [public_document(item) for item in items[start: start + page_size]],
+        "items": public_items,
     }
 
 

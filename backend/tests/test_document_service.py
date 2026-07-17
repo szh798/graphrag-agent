@@ -100,6 +100,41 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(doc["pages"], 1)
         self.assertEqual(saved[0]["pages"], 1)
 
+    def test_list_documents_restores_active_job_id_after_page_reload(self):
+        from services import document_service as svc
+
+        class FakeRepo:
+            def list_documents(self):
+                return [{
+                    "doc_id": "doc_active",
+                    "filename": "resume.jpg",
+                    "format": "jpg",
+                    "status": "queued",
+                    "uploaded_at": "2026-07-17T00:00:00+00:00",
+                }]
+
+            def list_all_jobs(self):
+                return [
+                    {
+                        "job_id": "job_active",
+                        "doc_id": "doc_active",
+                        "status": "queued",
+                        "created_at": "2026-07-17T00:01:00+00:00",
+                    },
+                    {
+                        "job_id": "job_old",
+                        "doc_id": "doc_active",
+                        "status": "failed",
+                        "created_at": "2026-07-16T00:01:00+00:00",
+                    },
+                ]
+
+        with patch.object(svc.app_store, "get_app_repository", return_value=FakeRepo()):
+            result = svc.list_documents()
+
+        self.assertEqual(result["items"][0]["status"], "indexing")
+        self.assertEqual(result["items"][0]["job_id"], "job_active")
+
     def test_upload_content_checks_mime_and_magic(self):
         from services.document_service import detect_supported_image_format, validate_upload_content
 
