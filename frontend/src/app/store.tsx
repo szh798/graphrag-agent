@@ -1,7 +1,20 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
-import { api, type ApiDoc, type ApiKGNode, type ApiKGEdge, type ApiChatSessionSummary, type ApiIndexResult, ApiError } from './api';
+import {
+  api,
+  type ApiDoc,
+  type ApiKGNode,
+  type ApiKGEdge,
+  type ApiChatSessionSummary,
+  type ApiIndexResult,
+  type ApiQueryReference,
+  type Engine,
+  type LightRAGMode,
+  ApiError,
+} from './api';
 import { useAuthRuntime } from './auth';
 import { normalizeDocumentStatus, type DocumentStatus } from './document-status';
+import { indexProgressPercent } from './index-progress';
+import { hasActiveDocumentIndex } from './document-index-state';
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
 
@@ -15,6 +28,8 @@ export interface KGNode {
   centrality: number;
   doc_id: string;
   description?: string;
+  pages?: number[];
+  engine?: Engine;
 }
 
 export interface KGEdge {
@@ -23,6 +38,21 @@ export interface KGEdge {
   target: string;
   relation: string;
   weight: number;
+  description?: string;
+  pages?: number[];
+  engine?: Engine;
+}
+
+export interface EngineIndexState {
+  status: DocumentStatus;
+  raw_status: string;
+  job_id?: string;
+  stage?: string;
+  progress?: number;
+  error?: string;
+  nodes?: number;
+  edges?: number;
+  pages?: number;
 }
 
 export interface Document {
@@ -36,6 +66,8 @@ export interface Document {
   index_stage?: string;
   progress?: number;
   error?: string;
+  indexes?: Partial<Record<Engine, EngineIndexState>>;
+  available_engines?: Engine[];
   result?: {
     nodes: number;
     edges: number;
@@ -52,8 +84,11 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   toolCalls?: ToolCall[];
-  citedNodes?: { id: string; name: string; type: string }[];
+  citedNodes?: { id?: string; name: string; type: string }[];
   duration?: number;
+  engine?: Engine;
+  retrievalMode?: LightRAGMode | null;
+  references?: ApiQueryReference[];
 }
 
 export interface ToolCall {
@@ -83,6 +118,8 @@ export interface ChatSession {
   last_question: string;
   last_answer: string;
   group: '今天' | '昨天' | '更早';
+  engine: Engine;
+  retrievalMode: LightRAGMode | null;
 }
 
 export interface HealthStatus {
@@ -103,6 +140,42 @@ export interface StatsData {
 
 function mapApiDoc(d: ApiDoc): Document {
   const uploadedAt = d.upload_date ?? d.uploaded_at ?? new Date().toISOString();
+  const indexes = Object.fromEntries(
+    Object.entries(d.indexes ?? {}).map(([engine, state]) => [
+      engine,
+      {
+        status: state.status === 'pending' || state.status === 'disabled'
+          ? 'uploaded'
+          : normalizeDocumentStatus(state.status),
+        raw_status: state.status,
+        job_id: state.job_id ?? undefined,
+        stage: state.stage ?? undefined,
+        progress: state.progress == null
+          ? undefined
+          : indexProgressPercent(state.progress),
+        error: state.error ?? state.error_msg ?? undefined,
+        nodes: state.nodes ?? state.stats?.nodes,
+        edges: state.edges ?? state.stats?.edges,
+        pages: state.pages ?? state.stats?.pages,
+      } satisfies EngineIndexState,
+    ]),
+  ) as Partial<Record<Engine, EngineIndexState>>;
+
+  if (!indexes.legacy) {
+    indexes.legacy = {
+      status: normalizeDocumentStatus(d.status),
+      raw_status: d.status,
+      job_id: d.job_id ?? undefined,
+      error: d.error_msg ?? undefined,
+    };
+  }
+
+  const availableEngines = d.available_engines?.filter(
+    (engine): engine is Engine => engine === 'legacy' || engine === 'lightrag',
+  ) ?? (Object.entries(indexes)
+    .filter(([, state]) => state?.status === 'indexed')
+    .map(([engine]) => engine as Engine));
+
   return {
     id: d.doc_id,
     filename: d.filename,
@@ -111,7 +184,11 @@ function mapApiDoc(d: ApiDoc): Document {
     status: normalizeDocumentStatus(d.status),
     upload_date: uploadedAt,
     job_id: d.job_id ?? undefined,
+    index_stage: d.index_stage ?? undefined,
+    progress: d.progress == null ? undefined : indexProgressPercent(d.progress),
     error: d.error_msg ?? undefined,
+    indexes,
+    available_engines: availableEngines,
   };
 }
 
@@ -126,15 +203,19 @@ function mapApiIndexResult(result: ApiIndexResult): NonNullable<Document['result
 }
 
 export function mapApiNode(n: ApiKGNode): KGNode {
+  const pages = n.pages?.length ? n.pages : [n.page ?? 0];
   return {
     id: n.id,
     name: n.name,
     type: n.type as KGNode['type'],
-    page: n.page,
-    confidence: n.confidence as KGNode['confidence'],
+    page: n.page ?? pages[0] ?? 0,
+    confidence: (n.confidence || 'match_exact') as KGNode['confidence'],
     degree: n.degree,
     centrality: n.degree_centrality ?? 0,
     doc_id: n.source_doc,
+    description: n.description ?? undefined,
+    pages,
+    engine: n.engine ?? 'legacy',
   };
 }
 
@@ -144,7 +225,10 @@ export function mapApiEdge(e: ApiKGEdge): KGEdge {
     source: e.source,
     target: e.target,
     relation: e.relation,
-    weight: 1,
+    weight: e.weight ?? 1,
+    description: e.description ?? undefined,
+    pages: e.pages?.length ? e.pages : [e.page ?? 0],
+    engine: e.engine ?? 'legacy',
   };
 }
 
@@ -165,6 +249,8 @@ function mapApiSession(s: ApiChatSessionSummary): ChatSession {
     last_question: s.last_question,
     last_answer: s.last_answer,
     group: getHistoryGroup(s.updated_at),
+    engine: s.engine ?? 'legacy',
+    retrievalMode: s.engine === 'lightrag' ? (s.retrieval_mode ?? 'mix') : null,
   };
 }
 
@@ -177,7 +263,9 @@ interface AppState {
   nodes: KGNode[];
   edges: KGEdge[];
   kgLoading: boolean;
-  refreshKG: () => void;
+  graphEngine: Engine;
+  setGraphEngine: (engine: Engine) => void;
+  refreshKG: (engine?: Engine) => void;
 
   documents: Document[];
   docsLoading: boolean;
@@ -226,6 +314,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [nodes, setNodes] = useState<KGNode[]>([]);
   const [edges, setEdges] = useState<KGEdge[]>([]);
   const [kgLoading, setKgLoading] = useState(true);
+  const [graphEngine, setGraphEngineState] = useState<Engine>('legacy');
+  const graphEngineRef = React.useRef<Engine>('legacy');
+  const kgRequestIdRef = React.useRef(0);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -237,12 +328,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ── KG data ──────────────────────────────────────────────────────────────
 
-  const refreshKG = useCallback(async () => {
+  const setGraphEngine = useCallback((engine: Engine) => {
+    if (graphEngineRef.current === engine) return;
+    graphEngineRef.current = engine;
+    setGraphEngineState(engine);
+    setNodes([]);
+    setEdges([]);
+    setKgLoading(true);
+    setSelectedNode(null);
+  }, []);
+
+  const refreshKG = useCallback(async (engine = graphEngineRef.current) => {
+    const requestId = ++kgRequestIdRef.current;
     try {
       setKgLoading(true);
       const [firstNodes, firstEdges] = await Promise.all([
-        api.getNodes({ page: 1, pageSize: KG_NODES_PAGE_SIZE }),
-        api.getEdges({ page: 1, pageSize: KG_EDGES_PAGE_SIZE, layout: true }),
+        api.getNodes({ page: 1, pageSize: KG_NODES_PAGE_SIZE, layout: true, engine }),
+        api.getEdges({ page: 1, pageSize: KG_EDGES_PAGE_SIZE, layout: true, engine }),
       ]);
 
       const nodePages = Math.ceil(firstNodes.total / Math.max(1, firstNodes.page_size));
@@ -251,21 +353,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const [restNodePages, restEdgePages] = await Promise.all([
         nodePages > 1
           ? Promise.all(Array.from({ length: nodePages - 1 }, (_, index) =>
-              api.getNodes({ page: index + 2, pageSize: KG_NODES_PAGE_SIZE })
+              api.getNodes({ page: index + 2, pageSize: KG_NODES_PAGE_SIZE, layout: true, engine })
             ))
           : Promise.resolve([]),
         edgePages > 1
           ? Promise.all(Array.from({ length: edgePages - 1 }, (_, index) =>
-              api.getEdges({ page: index + 2, pageSize: KG_EDGES_PAGE_SIZE, layout: true })
+              api.getEdges({ page: index + 2, pageSize: KG_EDGES_PAGE_SIZE, layout: true, engine })
             ))
           : Promise.resolve([]),
       ]);
 
       const allNodeItems = [firstNodes, ...restNodePages].flatMap(page => page.items);
       const allEdgeItems = [firstEdges, ...restEdgePages].flatMap(page => page.items);
+      if (requestId !== kgRequestIdRef.current || engine !== graphEngineRef.current) return;
       setNodes(allNodeItems.map(mapApiNode));
       setEdges(allEdgeItems.map(mapApiEdge));
     } catch (err) {
+      if (requestId !== kgRequestIdRef.current || engine !== graphEngineRef.current) return;
       // code=3002 means empty KG — that's fine
       if (!(err instanceof ApiError && err.code === 3002)) {
         console.error('KG load error:', err);
@@ -273,7 +377,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setNodes([]);
       setEdges([]);
     } finally {
-      setKgLoading(false);
+      if (requestId === kgRequestIdRef.current && engine === graphEngineRef.current) {
+        setKgLoading(false);
+      }
     }
   }, []);
 
@@ -401,7 +507,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ── Poll active indexing jobs every 3 s ───────────────────────────────────
 
   useEffect(() => {
-    const indexingDocs = documents.filter(d => d.status === 'indexing' && d.job_id);
+    const indexingDocs = documents.filter(d => d.job_id && hasActiveDocumentIndex(d));
     if (indexingDocs.length === 0) return;
 
     const id = setInterval(async () => {
@@ -412,19 +518,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
         try {
           const status = await api.getJobStatus(doc.job_id);
 
-          if (status.status === 'done') {
+          if (status.status === 'done' || status.status === 'partial') {
             try {
               const result = await api.getJobResult(doc.job_id);
+              const legacyFailed = status.engines?.legacy?.status === 'failed';
               updates.push({
                 id: doc.id,
-                status: 'indexed',
+                status: legacyFailed ? 'failed' : 'indexed',
                 progress: 100,
+                error: status.status === 'partial' ? (status.error ?? '其中一个引擎索引失败') : undefined,
                 result: {
                   ...mapApiIndexResult(result),
                 },
               });
             } catch {
-              updates.push({ id: doc.id, status: 'indexed', progress: 100 });
+              updates.push({
+                id: doc.id,
+                status: status.engines?.legacy?.status === 'failed' ? 'failed' : 'indexed',
+                progress: 100,
+                error: status.status === 'partial' ? (status.error ?? '其中一个引擎索引失败') : undefined,
+              });
             }
           } else if (status.status === 'failed') {
             updates.push({ id: doc.id, status: 'failed', error: status.error_msg ?? 'Indexing failed' });
@@ -436,7 +549,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               id: doc.id,
               status: 'indexing',
               index_stage: status.stage,
-              progress: Math.round(status.progress * 100),
+              progress: indexProgressPercent(status.progress),
             });
           }
         } catch {
@@ -453,7 +566,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         })
       );
 
-      if (updates.some(u => u.status === 'indexed')) {
+      if (updates.some(u => u.status === 'indexed' || u.status === 'failed')) {
+        refreshDocuments();
         refreshKG();
         refreshHealthStats();
         refreshHistory();
@@ -462,7 +576,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, 3000);
 
     return () => clearInterval(id);
-  }, [documents, refreshKG, refreshHealthStats, refreshHistory, refreshSessions]);
+  }, [documents, refreshDocuments, refreshKG, refreshHealthStats, refreshHistory, refreshSessions]);
+
+  // LightRAG can continue after the compatibility `status` has reached the
+  // classic engine's terminal state. Refresh the document summaries until all
+  // advertised child indexes have settled.
+  useEffect(() => {
+    const hasBackgroundEngine = documents.some(doc =>
+      Object.values(doc.indexes ?? {}).some(index => index?.status === 'indexing')
+      && doc.status !== 'indexing'
+    );
+    if (!hasBackgroundEngine) return;
+
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshDocuments();
+    }, 3_000);
+    return () => window.clearInterval(id);
+  }, [documents, refreshDocuments]);
 
   // ── Neighbor helper ───────────────────────────────────────────────────────
 
@@ -486,7 +616,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <AppContext.Provider
       value={{
         sidebarCollapsed, setSidebarCollapsed,
-        nodes, edges, kgLoading, refreshKG,
+        nodes, edges, kgLoading, graphEngine, setGraphEngine, refreshKG,
         documents, docsLoading, refreshDocuments, setDocuments,
         messages, setMessages,
         chatHistory, refreshHistory,

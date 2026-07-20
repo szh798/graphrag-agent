@@ -3,13 +3,13 @@ import { useNavigate, useSearchParams } from 'react-router';
 import * as d3 from 'd3';
 import { Search, ExternalLink, MessageSquare, ArrowRight } from 'lucide-react';
 import { useAppState, mapApiNode, mapApiEdge, type KGNode } from '../../store';
-import { api, ApiError } from '../../api';
+import { api, ApiError, type Engine } from '../../api';
 import { TYPE_COLORS } from '../../mock-data';
 
 const ENTITY_TYPES_OPTIONS = ['全部类型', 'TECHNOLOGY', 'CONCEPT', 'PERSON', 'ORGANIZATION', 'LOCATION'];
 
 export function SearchPage() {
-  const { nodes, edges, getNeighbors } = useAppState();
+  const { nodes, edges, getNeighbors, graphEngine, setGraphEngine, refreshKG } = useAppState();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -22,6 +22,8 @@ export function SearchPage() {
   const [selectedResult, setSelectedResult] = useState<KGNode | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [engine, setEngine] = useState<Engine>(searchParams.get('engine') === 'lightrag' ? 'lightrag' : 'legacy');
+  const [engineError, setEngineError] = useState('');
 
   // Path search
   const [pathFrom, setPathFrom] = useState('');
@@ -43,6 +45,46 @@ export function SearchPage() {
 
   const previewRef = useRef<SVGSVGElement>(null);
 
+  useEffect(() => {
+    const requested = searchParams.get('engine');
+    if (requested === 'legacy' || requested === 'lightrag') {
+      if (requested !== engine) setEngine(requested);
+      return;
+    }
+    const next = new URLSearchParams(searchParams);
+    next.set('engine', engine);
+    setSearchParams(next, { replace: true });
+  }, [engine, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (graphEngine !== engine) {
+      setGraphEngine(engine);
+      void refreshKG(engine);
+    }
+  }, [engine, graphEngine, refreshKG, setGraphEngine]);
+
+  useEffect(() => {
+    setEngineError('');
+    setResults([]);
+    setSelectedResult(null);
+    setPathResult(null);
+    setPathError('');
+    setGraphResults([]);
+    setHasSearched(false);
+  }, [engine]);
+
+  const reportSearchError = (error: unknown, fallback: string) => {
+    const message = error instanceof ApiError ? error.message : fallback;
+    setEngineError(message);
+  };
+
+  const handleEngineChange = (nextEngine: Engine) => {
+    setEngine(nextEngine);
+    const next = new URLSearchParams(searchParams);
+    next.set('engine', nextEngine);
+    setSearchParams(next, { replace: true });
+  };
+
   // Auto-search from URL
   useEffect(() => {
     const q = searchParams.get('q');
@@ -59,13 +101,20 @@ export function SearchPage() {
     setSearching(true);
     setHasSearched(true);
     try {
-      const res = await api.searchEntities(q.trim(), type !== '全部类型' ? type : undefined, 50);
+      setEngineError('');
+      const res = await api.searchEntities(q.trim(), type !== '全部类型' ? type : undefined, 50, engine);
       const mapped = res.items.map(mapApiNode);
       setResults(mapped);
       setSelectedResult(mapped[0] ?? null);
-      setSearchParams({ q: q.trim(), type, tab: 'entity' });
-    } catch {
+      const next = new URLSearchParams(searchParams);
+      next.set('q', q.trim());
+      next.set('type', type);
+      next.set('tab', 'entity');
+      next.set('engine', engine);
+      setSearchParams(next);
+    } catch (error) {
       setResults([]);
+      reportSearchError(error, '实体搜索失败');
     } finally {
       setSearching(false);
     }
@@ -182,7 +231,8 @@ export function SearchPage() {
 
     setPathSearching(true);
     try {
-      const res = await api.searchPath(fromNode.id, toNode.id, maxHops);
+      setEngineError('');
+      const res = await api.searchPath(fromNode.id, toNode.id, maxHops, engine);
       if (!res.paths || res.paths.length === 0) {
         setPathResult([]);
       } else {
@@ -200,6 +250,7 @@ export function SearchPage() {
         setPathResult([]);
       } else {
         setPathError(err instanceof ApiError ? err.message : '路径查找失败');
+        reportSearchError(err, '路径查找失败');
       }
     } finally {
       setPathSearching(false);
@@ -212,10 +263,12 @@ export function SearchPage() {
     if (!graphQuery.trim()) return;
     setGraphSearching(true);
     try {
-      const res = await api.searchGraph(graphQuery.trim(), includeNeighbors);
+      setEngineError('');
+      const res = await api.searchGraph(graphQuery.trim(), includeNeighbors, engine);
       setGraphResults(res.matched_nodes.map(mapApiNode));
-    } catch {
+    } catch (error) {
       setGraphResults([]);
+      reportSearchError(error, '图谱搜索失败');
     } finally {
       setGraphSearching(false);
     }
@@ -223,7 +276,41 @@ export function SearchPage() {
 
   return (
     <div className="page-shell search-page p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
-      <h1 className="mb-6" style={{ color: 'var(--text-1)', fontSize: 20, fontWeight: 600 }}>搜索</h1>
+      <div className="flex items-center justify-between gap-3 mb-6">
+        <h1 style={{ color: 'var(--text-1)', fontSize: 20, fontWeight: 600 }}>搜索</h1>
+        <div className="flex items-center gap-2">
+          <span style={{ color: 'var(--text-4)', fontSize: 11 }}>搜索引擎</span>
+          <select
+            aria-label="选择搜索引擎"
+            value={engine}
+            disabled={searching || pathSearching || graphSearching}
+            onChange={event => handleEngineChange(event.target.value as Engine)}
+            className="px-2.5 py-1.5 rounded-md cursor-pointer"
+            style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 12 }}
+          >
+            <option value="legacy">经典引擎</option>
+            <option value="lightrag">LightRAG</option>
+          </select>
+        </div>
+      </div>
+
+      {engineError && (
+        <div className="flex items-center justify-between gap-3 rounded-md px-3 py-2 mb-4" style={{ background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.25)' }}>
+          <span style={{ color: 'var(--red)', fontSize: 12 }}>
+            {engine === 'lightrag' ? `LightRAG 不可用：${engineError}` : engineError}
+          </span>
+          {engine === 'lightrag' && (
+            <button
+              type="button"
+              onClick={() => handleEngineChange('legacy')}
+              className="px-2.5 py-1 rounded cursor-pointer"
+              style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 11 }}
+            >
+              切换经典引擎
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Search Header */}
       <div className="flex gap-3 mb-4">
@@ -298,7 +385,7 @@ export function SearchPage() {
               <div className="flex flex-col items-center justify-center py-16 gap-3">
                 <span style={{ color: 'var(--text-3)', fontSize: 14 }}>未找到实体 "{query}"</span>
                 <button
-                  onClick={() => navigate('/graph')}
+                  onClick={() => navigate(`/graph?engine=${engine}`)}
                   className="flex items-center gap-1 cursor-pointer"
                   style={{ color: 'var(--blue)', fontSize: 13, background: 'none', border: 'none' }}
                 >
@@ -329,21 +416,21 @@ export function SearchPage() {
                         </span>
                       </div>
                       <div className="flex items-center gap-3" style={{ fontSize: 11, color: 'var(--text-4)' }}>
-                        <span>页码 {r.page}</span>
+                        <span>页码 {r.pages?.join('、') || r.page || '—'}</span>
                         <span>度数 {r.degree}</span>
-                        <span>{r.confidence.replace('match_', '')}</span>
+                        {engine === 'legacy' && <span>{r.confidence.replace('match_', '')}</span>}
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <button
-                        onClick={e => { e.stopPropagation(); navigate(`/graph?node=${r.id}`); }}
+                        onClick={e => { e.stopPropagation(); navigate(`/graph?node=${encodeURIComponent(r.id)}&engine=${engine}`); }}
                         className="px-2 py-1 rounded cursor-pointer"
                         style={{ fontSize: 10, background: 'rgba(88,166,255,0.1)', color: 'var(--blue)', border: 'none' }}
                       >
                         查看图谱
                       </button>
                       <button
-                        onClick={e => { e.stopPropagation(); navigate(`/chat?q=${encodeURIComponent(`What is ${r.name}`)}`); }}
+                        onClick={e => { e.stopPropagation(); navigate(`/chat?q=${encodeURIComponent(`What is ${r.name}`)}&engine=${engine}`); }}
                         className="px-2 py-1 rounded cursor-pointer"
                         style={{ fontSize: 10, background: 'rgba(88,166,255,0.1)', color: 'var(--blue)', border: 'none' }}
                       >
@@ -389,7 +476,7 @@ export function SearchPage() {
                 style={{ background: 'var(--bg-s2)', border: `1px solid ${pathFromNode ? 'var(--blue)' : 'var(--border-main)'}`, color: 'var(--text-1)', fontSize: 13 }}
               />
               {showPathFromSuggestions && pathFromSuggestions.length > 0 && (
-                <PathSuggestionList items={pathFromSuggestions} onSelect={node => selectPathNode('from', node)} />
+                <PathSuggestionList engine={engine} items={pathFromSuggestions} onSelect={node => selectPathNode('from', node)} />
               )}
             </div>
             <div className="flex-1 relative">
@@ -403,7 +490,7 @@ export function SearchPage() {
                 style={{ background: 'var(--bg-s2)', border: `1px solid ${pathToNode ? 'var(--blue)' : 'var(--border-main)'}`, color: 'var(--text-1)', fontSize: 13 }}
               />
               {showPathToSuggestions && pathToSuggestions.length > 0 && (
-                <PathSuggestionList items={pathToSuggestions} onSelect={node => selectPathNode('to', node)} />
+                <PathSuggestionList engine={engine} items={pathToSuggestions} onSelect={node => selectPathNode('to', node)} />
               )}
             </div>
             <div>
@@ -446,7 +533,7 @@ export function SearchPage() {
                 {pathResult.map((n, i) => (
                   <React.Fragment key={n.id}>
                     <button
-                      onClick={() => navigate(`/graph?node=${n.id}`)}
+                      onClick={() => navigate(`/graph?node=${encodeURIComponent(n.id)}&engine=${engine}`)}
                       className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer"
                       style={{ background: 'var(--bg-s2)', border: `1px solid ${TYPE_COLORS[n.type] ?? '#8b949e'}40` }}
                     >
@@ -507,7 +594,7 @@ export function SearchPage() {
                 {graphResults.map(n => (
                   <button
                     key={n.id}
-                    onClick={() => navigate(`/graph?node=${n.id}`)}
+                    onClick={() => navigate(`/graph?node=${encodeURIComponent(n.id)}&engine=${engine}`)}
                     className="flex items-center gap-2 px-3 py-1.5 rounded-full cursor-pointer"
                     style={{ background: `${TYPE_COLORS[n.type] ?? '#8b949e'}15`, border: `1px solid ${TYPE_COLORS[n.type] ?? '#8b949e'}40`, color: TYPE_COLORS[n.type] ?? '#8b949e', fontSize: 12 }}
                   >
@@ -530,7 +617,7 @@ export function SearchPage() {
   );
 }
 
-function PathSuggestionList({ items, onSelect }: { items: KGNode[]; onSelect: (node: KGNode) => void }) {
+function PathSuggestionList({ engine, items, onSelect }: { engine: Engine; items: KGNode[]; onSelect: (node: KGNode) => void }) {
   return (
     <div
       className="absolute left-0 right-0 mt-1 rounded-md overflow-hidden"
@@ -548,7 +635,7 @@ function PathSuggestionList({ items, onSelect }: { items: KGNode[]; onSelect: (n
           <span className="flex-1 min-w-0">
             <span className="block truncate" style={{ color: 'var(--text-1)', fontSize: 12 }}>{node.name}</span>
             <span className="block" style={{ color: 'var(--text-4)', fontSize: 10 }}>
-              {node.type} · 度数 {node.degree} · {node.confidence.replace('match_', '')}
+              {node.type} · 度数 {node.degree}{engine === 'legacy' ? ` · ${node.confidence.replace('match_', '')}` : ''}
             </span>
           </span>
         </button>

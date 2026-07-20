@@ -4,6 +4,8 @@
  * All functions return the `data` field; throw ApiError on code !== 0
  */
 
+import type { StructuredIndexProgress } from './index-progress';
+
 const BASE = import.meta.env.VITE_API_BASE_URL ?? (
   import.meta.env.PROD ? '/api/v1' : 'http://localhost:8000/api/v1'
 );
@@ -86,6 +88,35 @@ const del = <T>(
 
 // ─── Response Types ───────────────────────────────────────────────────────────
 
+export type Engine = 'legacy' | 'lightrag';
+export type LightRAGMode = 'local' | 'global' | 'hybrid' | 'mix' | 'naive';
+
+export const LIGHTRAG_MODES: ReadonlyArray<{ value: LightRAGMode; label: string }> = [
+  { value: 'mix', label: 'Mix 综合' },
+  { value: 'local', label: 'Local 局部' },
+  { value: 'global', label: 'Global 全局' },
+  { value: 'hybrid', label: 'Hybrid 混合' },
+  { value: 'naive', label: 'Naive 向量' },
+];
+
+export interface ApiEngineIndexState {
+  status: string;
+  job_id?: string | null;
+  stage?: string | null;
+  progress?: number | StructuredIndexProgress | null;
+  error_msg?: string | null;
+  error?: string | null;
+  stats?: {
+    nodes?: number;
+    edges?: number;
+    pages?: number;
+    [key: string]: unknown;
+  };
+  nodes?: number;
+  edges?: number;
+  pages?: number;
+}
+
 export interface ApiDoc {
   doc_id: string;
   filename: string;
@@ -95,20 +126,27 @@ export interface ApiDoc {
   uploaded_at?: string;
   upload_date?: string;
   job_id?: string | null;
+  index_job_status?: string | null;
+  index_stage?: string | null;
+  progress?: number | StructuredIndexProgress | null;
   file_size?: number;
   size_bytes?: number;
   error_msg?: string | null;
+  indexes?: Partial<Record<Engine, ApiEngineIndexState>>;
+  available_engines?: Engine[];
 }
 
 export interface ApiJobStatus {
   job_id: string;
   doc_id: string;
-  status: 'submitted' | 'queued' | 'parsing' | 'extracting' | 'indexing' | 'done' | 'failed' | 'cancelled';
+  status: 'submitted' | 'queued' | 'parsing' | 'extracting' | 'indexing' | 'done' | 'partial' | 'failed' | 'cancelled';
   stage: string;
-  progress: number; // 0.0–1.0
+  progress: number | StructuredIndexProgress; // legacy 0.0-1.0 number or current backend progress
   started_at?: string;
   updated_at?: string;
   error_msg?: string | null;
+  error?: string | null;
+  engines?: Partial<Record<Engine, ApiEngineIndexState>>;
 }
 
 export interface ApiIndexSummary {
@@ -175,6 +213,9 @@ export interface ApiKGNode {
   confidence: string;
   degree: number;
   source_doc: string;
+  engine?: Engine;
+  description?: string | null;
+  pages?: number[];
   // Only present in detail endpoint:
   degree_centrality?: number;
   neighbor_count?: number;
@@ -187,6 +228,10 @@ export interface ApiKGEdge {
   relation: string;
   doc_id: string;
   page: number;
+  engine?: Engine;
+  description?: string | null;
+  weight?: number;
+  pages?: number[];
 }
 
 export interface ApiComponentHealth {
@@ -221,6 +266,27 @@ export interface ApiComponentHealth {
   chat_sessions?: number;
   batches?: number;
   error?: string;
+  version?: string;
+  enabled?: boolean;
+  configured?: boolean;
+  ready?: boolean;
+  worker_status?: string;
+  queue_depth?: number;
+  active_jobs?: number;
+  pending_documents?: number;
+  completed_documents?: number;
+  reranker?: string;
+  detail?: string;
+  total?: number;
+  done?: number;
+  pending?: number;
+  failed?: number;
+  worker_id?: string;
+  last_seen?: string;
+  last_updated?: string;
+  heartbeat_age_seconds?: number;
+  heartbeat_ttl_seconds?: number;
+  maintenance_status?: string;
 }
 
 export interface ApiHealthData {
@@ -241,6 +307,12 @@ export interface ApiHealthData {
     app_database?: ApiComponentHealth;
     blob_storage?: ApiComponentHealth;
     task_queue?: ApiComponentHealth;
+    lightrag?: ApiComponentHealth;
+    lightrag_worker?: ApiComponentHealth;
+    lightrag_graph_database?: ApiComponentHealth;
+    lightrag_vector_database?: ApiComponentHealth;
+    lightrag_reranker?: ApiComponentHealth;
+    lightrag_backfill?: ApiComponentHealth;
   };
 }
 
@@ -312,6 +384,29 @@ export interface ApiToolCall {
   tool_output: string;
 }
 
+export interface ApiQueryReference {
+  doc_id: string;
+  filename: string;
+  page: number | null;
+  chunk_id: string;
+  excerpt: string;
+}
+
+export interface ApiCitedEntity {
+  id: string;
+  name: string;
+  type: string;
+}
+
+export interface ApiTokenUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  model?: string;
+  provider?: string;
+  [key: string]: unknown;
+}
+
 export interface ApiQueryResult {
   id: string;
   session_id?: string;
@@ -323,6 +418,13 @@ export interface ApiQueryResult {
   duration_seconds: number;
   timestamp: string;
   session?: ApiChatSessionSummary;
+  engine?: Engine;
+  retrieval_mode?: LightRAGMode | null;
+  references?: ApiQueryReference[];
+  cited_entities?: Array<ApiCitedEntity | string>;
+  model?: string;
+  provider?: string;
+  usage?: ApiTokenUsage;
 }
 
 export type ApiQueryStreamEvent =
@@ -342,6 +444,13 @@ export interface ApiChatSessionMessage {
   cited_nodes?: string[];
   cited_chunks?: string[];
   duration_seconds?: number;
+  engine?: Engine;
+  retrieval_mode?: LightRAGMode | null;
+  references?: ApiQueryReference[];
+  cited_entities?: Array<ApiCitedEntity | string>;
+  model?: string;
+  provider?: string;
+  usage?: ApiTokenUsage;
 }
 
 export interface ApiChatSessionSummary {
@@ -352,6 +461,8 @@ export interface ApiChatSessionSummary {
   message_count: number;
   last_question: string;
   last_answer: string;
+  engine?: Engine;
+  retrieval_mode?: LightRAGMode | null;
 }
 
 export interface ApiChatSession extends ApiChatSessionSummary {
@@ -368,6 +479,13 @@ export interface ApiBatchItemResult {
   cited_chunks?: string[];
   duration_seconds?: number;
   timestamp?: string;
+  engine?: Engine;
+  retrieval_mode?: LightRAGMode | null;
+  references?: ApiQueryReference[];
+  cited_entities?: Array<ApiCitedEntity | string>;
+  model?: string;
+  provider?: string;
+  usage?: ApiTokenUsage;
 }
 
 export interface ApiBatchResult {
@@ -380,6 +498,8 @@ export interface ApiBatchResult {
   updated_at?: string;
   cancel_requested?: boolean;
   results: ApiBatchItemResult[];
+  engine?: Engine;
+  retrieval_mode?: LightRAGMode | null;
 }
 
 export interface ApiBatchSummary {
@@ -391,6 +511,8 @@ export interface ApiBatchSummary {
   created_at: string;
   updated_at?: string;
   cancel_requested?: boolean;
+  engine?: Engine;
+  retrieval_mode?: LightRAGMode | null;
 }
 
 export interface ApiSearchResult {
@@ -475,8 +597,9 @@ export const api = {
     del<{ doc_id: string; removed_nodes: number; removed_edges: number }>(`/documents/${docId}`),
 
   // B: Indexing
-  startIndexing: (docId: string) =>
-    post<{ job_id: string; doc_id: string; status: string }>('/index/start', { doc_id: docId }),
+  startIndexing: (docId: string, engine?: Engine) => engine
+    ? post<{ job_id: string; doc_id: string; status: string }>(`/index/${docId}/retry`, { engine })
+    : post<{ job_id: string; doc_id: string; status: string }>('/index/start', { doc_id: docId }),
 
   getJobStatus: (jobId: string) => get<ApiJobStatus>(`/index/status/${jobId}`),
 
@@ -485,55 +608,80 @@ export const api = {
   cancelJob: (jobId: string) => del<{ job_id: string }>(`/index/jobs/${jobId}`),
 
   // C: Knowledge Graph
-  getNodes: (params?: { page?: number; pageSize?: number; type?: string; docId?: string }) =>
+  getNodes: (params?: { page?: number; pageSize?: number; type?: string; docId?: string; layout?: boolean; engine?: Engine }) =>
     get<{ total: number; page: number; page_size: number; items: ApiKGNode[] }>('/kg/nodes', {
       page: params?.page,
       page_size: params?.pageSize ?? 500,
       type: params?.type,
       doc_id: params?.docId,
+      layout: params?.layout,
+      engine: params?.engine,
     }),
 
-  getEdges: (params?: { page?: number; pageSize?: number; docId?: string; layout?: boolean }) =>
+  getEdges: (params?: { page?: number; pageSize?: number; docId?: string; layout?: boolean; engine?: Engine }) =>
     get<{ total: number; raw_total?: number; page: number; page_size: number; items: ApiKGEdge[] }>('/kg/edges', {
       page: params?.page,
       page_size: params?.pageSize ?? 2000,
       doc_id: params?.docId,
       layout: params?.layout,
+      engine: params?.engine,
     }),
 
-  getNodeDetail: (nodeId: string) => get<ApiKGNode>(`/kg/nodes/${nodeId}`),
+  getNodeDetail: (nodeId: string, engine: Engine = 'legacy') =>
+    get<ApiKGNode>(`/kg/nodes/${nodeId}`, { engine }),
 
-  getNodeNeighbors: (nodeId: string, hops = 1) =>
+  getNodeNeighbors: (nodeId: string, hops = 1, engine: Engine = 'legacy') =>
     get<{
       center: ApiKGNode;
       hops: number;
       neighbors_by_hop: Record<string, ApiKGNode[]>;
       total_neighbors: number;
-    }>(`/kg/nodes/${nodeId}/neighbors`, { hops }),
+    }>(`/kg/nodes/${nodeId}/neighbors`, { hops, engine }),
 
-  getKGStats: () =>
-    get<{ total_nodes: number; total_edges: number; type_distribution: Record<string, number> }>('/kg/stats'),
+  getKGStats: (engine: Engine = 'legacy') =>
+    get<{ total_nodes: number; total_edges: number; type_distribution: Record<string, number> }>('/kg/stats', { engine }),
 
-  exportKG: (docId?: string) => get<{ nodes: ApiKGNode[]; edges: ApiKGEdge[] }>('/kg/export', {
+  exportKG: (docId?: string, engine: Engine = 'legacy') => get<{ nodes: ApiKGNode[]; edges: ApiKGEdge[] }>('/kg/export', {
     doc_id: docId,
+    engine,
   }),
 
   // D: QA Query
-  query: (question: string, history: { question: string; answer: string }[] = [], sessionId?: string | null) => {
+  query: (
+    question: string,
+    history: { question: string; answer: string }[] = [],
+    sessionId?: string | null,
+    engine: Engine = 'legacy',
+    retrievalMode: LightRAGMode = 'mix',
+  ) => {
     const chatHistory = toChatHistory(history);
-    return post<ApiQueryResult>('/query', { question, history: chatHistory, session_id: sessionId ?? undefined });
+    return post<ApiQueryResult>('/query', {
+      question,
+      history: chatHistory,
+      session_id: sessionId ?? undefined,
+      engine,
+      retrieval_mode: engine === 'lightrag' ? retrievalMode : undefined,
+    });
   },
 
   streamQuery: async (
     question: string,
     history: { question: string; answer: string }[] = [],
     sessionId: string | null | undefined,
-    onEvent: (event: ApiQueryStreamEvent) => void
+    onEvent: (event: ApiQueryStreamEvent) => void,
+    options: { engine?: Engine; retrievalMode?: LightRAGMode } = {},
   ) => {
+    const engine = options.engine ?? 'legacy';
     const res = await fetch(`${BASE}/query/stream`, {
       method: 'POST',
       headers: { ...(await getAuthorizationHeaders()), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, history: toChatHistory(history), session_id: sessionId ?? undefined }),
+      body: JSON.stringify({
+        question,
+        history: toChatHistory(history),
+        session_id: sessionId ?? undefined,
+        engine,
+        retrieval_mode: engine === 'lightrag' ? (options.retrievalMode ?? 'mix') : undefined,
+      }),
     });
 
     if (!res.ok || !res.body) {
@@ -578,7 +726,11 @@ export const api = {
       '/query/history', { page, page_size: pageSize }
     ),
 
-  createQuerySession: () => post<ApiChatSession>('/query/sessions'),
+  createQuerySession: (engine: Engine = 'lightrag', retrievalMode: LightRAGMode = 'mix') =>
+    post<ApiChatSession>('/query/sessions', {
+      engine,
+      retrieval_mode: engine === 'lightrag' ? retrievalMode : undefined,
+    }),
 
   getQuerySessions: (page = 1, pageSize = 50) =>
     get<{ total: number; page: number; page_size: number; items: ApiChatSessionSummary[] }>(
@@ -587,8 +739,12 @@ export const api = {
 
   getQuerySession: (sessionId: string) => get<ApiChatSession>(`/query/sessions/${sessionId}`),
 
-  startBatch: (questions: string[]) =>
-    post<{ batch_id: string; total: number; status: string; created_at: string }>('/query/batch', { questions }),
+  startBatch: (questions: string[], engine: Engine = 'legacy', retrievalMode: LightRAGMode = 'mix') =>
+    post<{ batch_id: string; total: number; status: string; created_at: string; engine?: Engine; retrieval_mode?: LightRAGMode | null }>('/query/batch', {
+      questions,
+      engine,
+      retrieval_mode: engine === 'lightrag' ? retrievalMode : undefined,
+    }),
 
   listBatches: (page = 1, pageSize = 20) =>
     get<{ total: number; page: number; page_size: number; items: ApiBatchSummary[] }>(
@@ -620,18 +776,19 @@ export const api = {
   getOpsSummary: (hours = 24) => get<ApiOpsSummary>('/ops/summary', { hours }),
 
   // F: Search
-  searchEntities: (q: string, type?: string, limit = 15) =>
+  searchEntities: (q: string, type?: string, limit = 15, engine: Engine = 'legacy') =>
     get<ApiSearchResult>('/search/entities', {
       q,
       type: type && type !== '全部类型' ? type : undefined,
       limit,
+      engine,
     }),
 
-  searchPath: (fromId: string, toId: string, maxHops = 3) =>
-    get<ApiPathResult>('/search/path', { from: fromId, to: toId, max_hops: maxHops }),
+  searchPath: (fromId: string, toId: string, maxHops = 3, engine: Engine = 'legacy') =>
+    get<ApiPathResult>('/search/path', { from: fromId, to: toId, max_hops: maxHops, engine }),
 
-  searchGraph: (q: string, includeNeighbors = false) =>
-    get<ApiGraphSearchResult>('/search/graph', { q, include_neighbors: includeNeighbors }),
+  searchGraph: (q: string, includeNeighbors = false, engine: Engine = 'legacy') =>
+    get<ApiGraphSearchResult>('/search/graph', { q, include_neighbors: includeNeighbors, engine }),
 
   // G: System
   getHealth: () => get<ApiHealthData>('/health'),

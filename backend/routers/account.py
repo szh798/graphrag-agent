@@ -119,11 +119,21 @@ async def delete_tenant_data(
 
 
 def _remove_document_artifacts(documents: list[dict]) -> None:
+    from services import document_service, indexing_service, lightrag_deletion_service
+
     graph_repo = graph_store.get_graph_repository()
     blob_repo = blob_store.get_blob_repository()
     for document in documents:
         doc_id = document.get("doc_id")
         if doc_id:
+            # Preserve a detached cancellation marker before the account
+            # repository bulk-deletes document-linked indexing rows.
+            cancelled_job_ids = indexing_service.cancel_document_jobs(str(doc_id), detach=True)
+            indexing_service.purge_cancelled_job_artifacts(cancelled_job_ids)
+            lightrag_deletion_service.delete_or_schedule({
+                **document,
+                "indexes": document_service.normalized_indexes(document),
+            })
             graph_repo.remove_document(str(doc_id))
         blob_ref = document.get("blob") or document.get("blob_ref") or document.get("storage")
         if blob_ref:

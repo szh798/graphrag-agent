@@ -83,6 +83,60 @@ class IndustrialStageServiceTests(unittest.TestCase):
         self.assertEqual(document_statuses, [("doc_1", "indexing")])
         thread_cls.assert_not_called()
 
+    def test_failed_durable_enqueue_is_terminal_and_retry_creates_a_fresh_job(self):
+        from services import indexing_service as svc
+
+        doc = {
+            "doc_id": "doc_retry",
+            "filename": "demo.pdf",
+            "upload_filename": "doc_retry_demo.pdf",
+            "owner_id": "tenant_1",
+            "status": "uploaded",
+        }
+        jobs: dict[str, dict] = {}
+        queue_calls: list[dict] = []
+
+        class AppRepo:
+            def get_document(self, doc_id):
+                return dict(doc) if doc_id == doc["doc_id"] else None
+
+            def save_document(self, value):
+                doc.clear()
+                doc.update(value)
+
+            def save_job_meta(self, job_id, meta):
+                jobs[job_id] = dict(meta)
+
+            def load_job_meta(self, job_id):
+                return dict(jobs[job_id]) if job_id in jobs else None
+
+            def list_all_jobs(self):
+                return [dict(item) for item in jobs.values()]
+
+        class QueueRepo:
+            def is_durable(self):
+                return True
+
+            def enqueue_index_job(self, payload):
+                queue_calls.append(dict(payload))
+                if len(queue_calls) == 1:
+                    raise RuntimeError("redis unavailable")
+
+        with (
+            patch.dict("os.environ", {"LIGHTRAG_ENABLED": "true"}, clear=False),
+            patch.object(svc.app_store, "get_app_repository", return_value=AppRepo()),
+            patch.object(svc.queue_store, "get_queue_repository", return_value=QueueRepo()),
+            patch.object(svc, "report_event"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "redis unavailable"):
+                svc.start_indexing("doc_retry")
+            first_job_id = next(iter(jobs))
+            second = svc.start_indexing("doc_retry")
+
+        self.assertEqual(jobs[first_job_id]["status"], "failed")
+        self.assertNotEqual(second["job_id"], first_job_id)
+        self.assertEqual(queue_calls[-1]["job_id"], second["job_id"])
+
     def test_indexing_attaches_embeddings_for_neo4j_graph_backend(self):
         from services import indexing_service as svc
 

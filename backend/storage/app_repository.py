@@ -47,6 +47,12 @@ class FileAppRepository:
     def list_documents(self) -> list[dict]:
         return list(fs.load_docs_index().values())
 
+    def find_document_by_blob(self, owner_id: str, blob_key: str) -> dict | None:
+        return next((
+            doc for doc in self.list_documents()
+            if _owner_id(doc) == owner_id and str(doc.get("blob_key") or "") == blob_key
+        ), None)
+
     def delete_document(self, doc_id: str) -> bool:
         index = fs.load_docs_index()
         if doc_id not in index:
@@ -283,6 +289,18 @@ class PostgresAppRepository:
 
     def list_documents(self) -> list[dict]:
         return self._fetch_payloads("SELECT payload FROM app_documents ORDER BY uploaded_at DESC NULLS LAST, created_at DESC")
+
+    def find_document_by_blob(self, owner_id: str, blob_key: str) -> dict | None:
+        return self._fetch_payload(
+            """
+            SELECT payload
+            FROM app_documents
+            WHERE owner_id = %s AND payload->>'blob_key' = %s
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (owner_id, blob_key),
+        )
 
     def delete_document(self, doc_id: str) -> bool:
         self.ensure_schema()

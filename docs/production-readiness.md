@@ -23,3 +23,13 @@
 4. 发布 Sites 前端。
 5. 验证公开白名单、问答、批任务和手机端导航。
 6. 检查错误日志和请求 ID 关联。
+
+## LightRAG 双引擎门禁
+
+- Vercel 只配置 Railway URL、HMAC 和 workspace 密钥，不得配置 LightRAG 的
+  `POSTGRES_*` 或 `NEO4J_*` 凭据。
+- Railway API 与 Worker 必须来自同一镜像 digest，且严格运行
+  `lightrag-hku==1.5.4`。
+- 回填先执行默认 dry-run，再用 `--apply --max-documents 1` 做 canary；禁止直接全量写入。
+- 详细环境清单、smoke 和无损回滚步骤见
+  [LightRAG 双引擎部署与运维手册](lightrag-dual-engine-operations.md)。

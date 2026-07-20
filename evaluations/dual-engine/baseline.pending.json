@@ -1,0 +1,7 @@
+{
+  "status": "pending_live_capture",
+  "reason": "经典引擎基线必须由目标预览环境真实运行生成，仓库不伪造答案、延迟或质量数据。",
+  "command": "backend/.venv/bin/python backend/scripts/evaluate_dual_engine.py evaluations/dual-engine/questions.jsonl --run --engines legacy --output /secure/path/legacy-baseline.jsonl",
+  "minimum_questions": 50,
+  "minimum_documents": 10
+}

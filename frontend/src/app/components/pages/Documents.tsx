@@ -2,11 +2,38 @@ import React, { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { FileText, UploadCloud, X, ChevronDown, ChevronRight, Eye, Play, Square } from 'lucide-react';
-import { useAppState, type Document } from '../../store';
-import { api, ApiError, type ApiDocumentExtractions, type ApiIndexResult } from '../../api';
+import { useAppState, type Document, type EngineIndexState } from '../../store';
+import { api, ApiError, type ApiDocumentExtractions, type ApiIndexResult, type Engine } from '../../api';
 import { useAuthRuntime } from '../../auth';
 import { uploadDocumentDirect } from '../../direct-upload';
 import { documentStatusLabel, documentStatusStyles } from '../../document-status';
+import { documentIndexProgress, hasActiveDocumentIndex } from '../../document-index-state';
+
+const ENGINE_LABELS: Record<Engine, string> = {
+  legacy: '经典',
+  lightrag: 'LightRAG',
+};
+
+function EngineIndexBadge({ engine, index }: { engine: Engine; index: EngineIndexState }) {
+  const style = documentStatusStyles[index.status] ?? documentStatusStyles.unknown;
+  const statusLabel = index.raw_status === 'pending'
+    ? '待索引'
+    : index.raw_status === 'disabled'
+      ? '未启用'
+      : documentStatusLabel[index.status];
+  return (
+    <span
+      className="px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+      title={index.error || index.stage || index.raw_status}
+      style={{ fontSize: 10, fontWeight: 600, background: style.bg, color: style.color, whiteSpace: 'nowrap' }}
+    >
+      {index.status === 'indexing' && (
+        <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: style.color }} />
+      )}
+      {ENGINE_LABELS[engine]} · {statusLabel}
+    </span>
+  );
+}
 
 export function Documents() {
   const { documents, setDocuments, refreshDocuments } = useAppState();
@@ -104,13 +131,30 @@ export function Documents() {
     }
   }, [identityPending, refreshDocuments]);
 
-  const handleStartIndex = useCallback(async (doc: Document) => {
+  const handleStartIndex = useCallback(async (doc: Document, engine?: Engine) => {
     try {
-      const job = await api.startIndexing(doc.id);
+      const job = await api.startIndexing(doc.id, engine);
       setDocuments(items => items.map(item => item.id === doc.id
-        ? { ...item, status: 'indexing', job_id: job.job_id, progress: 0, error: undefined }
+        ? {
+            ...item,
+            status: engine ? item.status : 'indexing',
+            job_id: engine ? item.job_id : job.job_id,
+            progress: engine ? item.progress : 0,
+            error: engine ? item.error : undefined,
+            indexes: {
+              ...item.indexes,
+              ...(engine ? {
+                [engine]: {
+                  status: 'indexing',
+                  raw_status: 'submitted',
+                  job_id: job.job_id,
+                  progress: 0,
+                } satisfies EngineIndexState,
+              } : {}),
+            },
+          }
         : item));
-      toast.success('索引任务已启动');
+      toast.success(engine ? `${engine === 'lightrag' ? 'LightRAG' : '经典引擎'}重试任务已启动` : '双引擎索引任务已启动');
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : '索引启动失败');
     }
@@ -123,11 +167,12 @@ export function Documents() {
       setDocuments(items => items.map(item => item.id === doc.id
         ? { ...item, status: 'uploaded', job_id: undefined, progress: undefined }
         : item));
+      await refreshDocuments();
       toast.success('索引任务已取消');
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : '取消索引失败');
     }
-  }, [setDocuments]);
+  }, [refreshDocuments, setDocuments]);
 
   return (
     <div className="page-shell documents-page p-6" style={{ maxWidth: 1200, margin: '0 auto' }}>
@@ -212,7 +257,7 @@ export function Documents() {
         <div
           className="grid gap-4 px-4 py-2.5"
           style={{
-            gridTemplateColumns: '24px 1fr 70px 50px 100px 140px 160px',
+            gridTemplateColumns: '24px minmax(260px,1fr) 70px 50px 190px 140px 180px',
             background: 'var(--bg-s2)', fontSize: 11, fontWeight: 600,
             color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.5px',
           }}
@@ -238,12 +283,14 @@ export function Documents() {
           filteredDocs.map(doc => {
             const st = documentStatusStyles[doc.status] ?? documentStatusStyles.unknown;
             const isExpanded = expandedDoc === doc.id;
+            const hasActiveIndex = Boolean(doc.job_id) && hasActiveDocumentIndex(doc);
+            const activeProgress = documentIndexProgress(doc);
             return (
               <React.Fragment key={doc.id}>
                 <div
                   className="grid gap-4 px-4 py-3 items-center"
                   style={{
-                    gridTemplateColumns: '24px 1fr 70px 50px 100px 140px 160px',
+                    gridTemplateColumns: '24px minmax(260px,1fr) 70px 50px 190px 140px 180px',
                     borderBottom: '1px solid var(--border-muted)',
                     fontSize: 13,
                   }}
@@ -266,19 +313,26 @@ export function Documents() {
                   </span>
                   <span style={{ color: 'var(--text-3)' }}>{doc.format}</span>
                   <span style={{ color: 'var(--text-3)' }}>{doc.pages || '—'}</span>
-                  <span>
-                    <span className="px-2 py-0.5 rounded-full inline-flex items-center gap-1" style={{ fontSize: 11, fontWeight: 600, background: st.bg, color: st.color }}>
-                      {doc.status === 'indexing' && (
-                        <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: st.color }} />
-                      )}
-                      {documentStatusLabel[doc.status]}
-                    </span>
+                  <span className="flex flex-col items-start gap-1">
+                    {doc.indexes && Object.keys(doc.indexes).length > 0 ? (
+                      (['legacy', 'lightrag'] as Engine[]).map(engine => {
+                        const index = doc.indexes?.[engine];
+                        return index ? <EngineIndexBadge key={engine} engine={engine} index={index} /> : null;
+                      })
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full inline-flex items-center gap-1" style={{ fontSize: 11, fontWeight: 600, background: st.bg, color: st.color }}>
+                        {doc.status === 'indexing' && (
+                          <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: st.color }} />
+                        )}
+                        {documentStatusLabel[doc.status]}
+                      </span>
+                    )}
                   </span>
                   <span style={{ color: 'var(--text-4)', fontSize: 12 }}>
                     {new Date(doc.upload_date).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </span>
                   <span className="flex items-center gap-2">
-                    {doc.status === 'uploaded' && (
+                    {doc.status === 'uploaded' && !hasActiveIndex && (
                       <button
                         onClick={() => void handleStartIndex(doc)}
                         className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
@@ -287,13 +341,13 @@ export function Documents() {
                         <Play size={10} /> 开始索引
                       </button>
                     )}
-                    {doc.status === 'indexing' && (
+                    {hasActiveIndex && (
                       <>
                         <div className="flex items-center gap-1.5 flex-1">
                           <div style={{ flex: 1, height: 4, background: 'var(--bg-s2)', borderRadius: 2, overflow: 'hidden', minWidth: 40 }}>
-                            <div style={{ width: `${doc.progress ?? 0}%`, height: '100%', background: 'var(--yellow)', borderRadius: 2, transition: 'width 300ms' }} />
+                            <div style={{ width: `${activeProgress}%`, height: '100%', background: 'var(--yellow)', borderRadius: 2, transition: 'width 300ms' }} />
                           </div>
-                          <span style={{ fontSize: 10, color: 'var(--yellow)', whiteSpace: 'nowrap' }}>{doc.progress ?? 0}%</span>
+                          <span style={{ fontSize: 10, color: 'var(--yellow)', whiteSpace: 'nowrap' }}>{activeProgress}%</span>
                         </div>
                         <button
                           onClick={() => void handleCancelIndex(doc)}
@@ -305,16 +359,29 @@ export function Documents() {
                         </button>
                       </>
                     )}
-                    {doc.status === 'indexed' && (
+                    {(doc.available_engines ?? (doc.status === 'indexed' ? ['legacy'] : [])).map(engine => (
                       <button
-                        onClick={() => navigate(`/graph?doc_id=${doc.id}`)}
+                        key={engine}
+                        onClick={() => navigate(`/graph?doc_id=${encodeURIComponent(doc.id)}&engine=${engine}`)}
                         className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
-                        style={{ fontSize: 11, background: 'rgba(88,166,255,0.1)', color: 'var(--blue)', border: 'none' }}
+                        style={{ fontSize: 10, background: 'rgba(88,166,255,0.1)', color: 'var(--blue)', border: 'none', whiteSpace: 'nowrap' }}
                       >
-                        <Eye size={10} /> 查看图谱
+                        <Eye size={10} /> {engine === 'lightrag' ? 'LightRAG' : '经典图谱'}
                       </button>
-                    )}
-                    {doc.status === 'failed' && (
+                    ))}
+                    {(Object.entries(doc.indexes ?? {}) as [Engine, EngineIndexState][])
+                      .filter(([, index]) => index.status === 'failed')
+                      .map(([engine]) => (
+                        <button
+                          key={`retry-${engine}`}
+                          onClick={() => void handleStartIndex(doc, engine)}
+                          className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
+                          style={{ fontSize: 10, background: 'rgba(63,185,80,0.12)', color: 'var(--green)', border: '1px solid rgba(63,185,80,0.25)', whiteSpace: 'nowrap' }}
+                        >
+                          <Play size={9} /> 重试 {ENGINE_LABELS[engine]}
+                        </button>
+                      ))}
+                    {doc.status === 'failed' && !Object.values(doc.indexes ?? {}).some(index => index?.status === 'failed') && (
                       <button
                         onClick={() => void handleStartIndex(doc)}
                         className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
@@ -330,7 +397,8 @@ export function Documents() {
 	                {isExpanded && doc.status === 'indexed' && (
 	                  <div className="px-12 py-3" style={{ background: 'var(--bg-s2)', borderBottom: '1px solid var(--border-muted)' }}>
 	                    {doc.result ? (
-	                      <div className="flex items-center gap-4 mb-2" style={{ fontSize: 13, color: 'var(--text-2)' }}>
+	                      <div className="flex flex-wrap items-center gap-4 mb-2" style={{ fontSize: 13, color: 'var(--text-2)' }}>
+	                        <span style={{ color: 'var(--text-4)', fontSize: 11 }}>经典引擎</span>
 	                        <span>{doc.result.nodes} 个节点</span>
 	                        <span style={{ color: 'var(--text-4)' }}>&middot;</span>
 	                        <span>{doc.result.edges} 条边</span>
@@ -355,14 +423,33 @@ export function Documents() {
 	                        {loadingResultDocId === doc.id ? '正在加载索引结果...' : '暂无索引结果详情'}
 	                      </div>
 	                    )}
+	                    {doc.indexes?.lightrag && (
+	                      <div className="flex flex-wrap items-center gap-4 mb-2" style={{ fontSize: 13, color: 'var(--text-2)' }}>
+	                        <span style={{ color: 'var(--text-4)', fontSize: 11 }}>LightRAG</span>
+	                        <span>{doc.indexes.lightrag.nodes ?? '—'} 个节点</span>
+	                        <span style={{ color: 'var(--text-4)' }}>&middot;</span>
+	                        <span>{doc.indexes.lightrag.edges ?? '—'} 条边</span>
+	                        <span style={{ color: 'var(--text-4)' }}>&middot;</span>
+	                        <span>{doc.indexes.lightrag.pages ?? (doc.pages || '—')} 页</span>
+	                      </div>
+	                    )}
 	                    <div className="flex items-center gap-2">
 	                      <button
-	                        onClick={() => navigate(`/graph?doc_id=${doc.id}`)}
+	                        onClick={() => navigate(`/graph?doc_id=${encodeURIComponent(doc.id)}&engine=legacy`)}
                         className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
                         style={{ fontSize: 11, background: 'rgba(88,166,255,0.1)', color: 'var(--blue)', border: 'none' }}
 	                      >
 	                        在图谱中查看
 	                      </button>
+	                      {doc.available_engines?.includes('lightrag') && (
+	                        <button
+	                          onClick={() => navigate(`/graph?doc_id=${encodeURIComponent(doc.id)}&engine=lightrag`)}
+	                          className="flex items-center gap-1 px-2 py-1 rounded cursor-pointer"
+	                          style={{ fontSize: 11, background: 'rgba(163,113,247,0.1)', color: '#a371f7', border: 'none' }}
+	                        >
+	                          查看 LightRAG 图谱
+	                        </button>
+	                      )}
 	                      {!doc.result?.recovered && (
 	                        <button
 	                          onClick={() => handleViewExtractions(doc)}

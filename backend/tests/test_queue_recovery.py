@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -50,6 +52,7 @@ class DurableQueueRecoveryTests(unittest.TestCase):
         jobs = {
             "job_retry": {"job_id": "job_retry", "doc_id": "doc_retry", "status": "parsing", "created_at": "2026-01-01T00:00:00+00:00"},
             "job_failed": {"job_id": "job_failed", "doc_id": "doc_failed", "status": "indexing", "created_at": "2026-01-01T00:00:00+00:00"},
+            "job_current": {"job_id": "job_current", "doc_id": "doc_current", "owner_id": "tenant_current", "status": "queued", "created_at": "2026-01-01T00:00:00+00:00"},
         }
         saved: list[dict] = []
         acknowledged: list[dict] = []
@@ -88,7 +91,7 @@ class DurableQueueRecoveryTests(unittest.TestCase):
         self.assertEqual(acknowledged[0]["_queue_receipt"], "receipt")
         self.assertTrue(saved)
 
-    def test_worker_acks_claim_when_job_runner_raises(self):
+    def test_worker_leases_claim_for_recovery_when_job_runner_raises(self):
         from services import indexing_service as service
 
         acknowledged: list[dict] = []
@@ -111,7 +114,112 @@ class DurableQueueRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 service.process_next_index_job(1)
 
-        self.assertEqual(acknowledged[0]["_queue_receipt"], "receipt")
+        self.assertEqual(acknowledged, [])
+
+    def test_upstash_owner_lock_and_processing_lease_use_compare_and_refresh_scripts(self):
+        from storage import queue_repository as queue
+
+        repo = queue.UpstashRedisQueueRepository()
+        commands: list[tuple[str, ...]] = []
+
+        def command(*parts: str):
+            commands.append(parts)
+            if parts[0] == "SET":
+                return {"result": "OK"}
+            return {"result": 1}
+
+        payload = {"job_id": "job_1", "_queue_receipt": "receipt"}
+        with (
+            patch.object(repo, "_command", side_effect=command),
+            patch.object(queue.time, "time", return_value=100),
+        ):
+            self.assertTrue(repo.acquire_index_owner_lock("tenant-secret", "job_1"))
+            self.assertTrue(repo.refresh_index_owner_lock("tenant-secret", "job_1"))
+            self.assertTrue(repo.refresh_index_job_lease(payload))
+            self.assertTrue(repo.release_index_owner_lock("tenant-secret", "job_1"))
+
+        lock_key = commands[0][1]
+        self.assertNotIn("tenant-secret", lock_key)
+        self.assertEqual(commands[0][0], "SET")
+        self.assertIn("NX", commands[0])
+        self.assertIn("EX", commands[0])
+        self.assertEqual(commands[2][-2], "receipt")
+        self.assertEqual(commands[2][-1], str(100 + queue.INDEX_JOB_LEASE_SECONDS))
+
+    def test_upstash_worker_heartbeat_has_ttl_and_reports_freshness(self):
+        from storage import queue_repository as queue
+
+        repo = queue.UpstashRedisQueueRepository()
+        commands: list[tuple[str, ...]] = []
+        stored: dict[str, str] = {}
+
+        def command(*parts: str):
+            commands.append(parts)
+            if parts[0] == "SET":
+                stored[parts[1]] = parts[2]
+                return {"result": "OK"}
+            if parts[0] == "GET":
+                return {"result": stored.get(parts[1])}
+            raise AssertionError(parts)
+
+        with (
+            patch.dict(os.environ, {
+                "INDEX_WORKER_HEARTBEAT_KEY": "test:worker-heartbeat",
+                "INDEX_WORKER_HEARTBEAT_TTL_SECONDS": "90",
+            }, clear=False),
+            patch.object(repo, "_command", side_effect=command),
+            patch.object(queue.time, "time", return_value=100),
+        ):
+            repo.record_worker_heartbeat("worker-stable", "1.2.3", last_seen=100)
+
+        with (
+            patch.dict(os.environ, {
+                "INDEX_WORKER_HEARTBEAT_KEY": "test:worker-heartbeat",
+                "INDEX_WORKER_HEARTBEAT_TTL_SECONDS": "90",
+            }, clear=False),
+            patch.object(repo, "_command", side_effect=command),
+            patch.object(queue.time, "time", return_value=125),
+        ):
+            heartbeat = repo.get_worker_heartbeat()
+
+        self.assertEqual(commands[0], (
+            "SET",
+            "test:worker-heartbeat",
+            stored["test:worker-heartbeat"],
+            "EX",
+            "90",
+        ))
+        self.assertEqual(commands[1], ("GET", "test:worker-heartbeat"))
+        self.assertEqual(heartbeat["worker_id"], "worker-stable")
+        self.assertEqual(heartbeat["version"], "1.2.3")
+        self.assertEqual(heartbeat["age_seconds"], 25)
+        self.assertTrue(heartbeat["fresh"])
+
+    def test_worker_heartbeat_identity_is_reused_and_not_derived_from_pid(self):
+        from scripts import worker
+
+        recorded: list[tuple[str, str]] = []
+
+        class QueueRepo:
+            def record_worker_heartbeat(self, worker_id, version):
+                recorded.append((worker_id, version))
+                return {"fresh": True}
+
+        with (
+            patch.dict(os.environ, {
+                "INDEX_WORKER_ID": "",
+                "RAILWAY_REPLICA_ID": "",
+            }, clear=False),
+            patch.object(worker, "_WORKER_ID", None),
+            patch.object(worker.uuid, "uuid4", return_value=SimpleNamespace(hex="stable-random-id")),
+            patch.object(os, "getpid", side_effect=AssertionError("PID must not be used")),
+        ):
+            worker._record_worker_heartbeat(QueueRepo())
+            worker._record_worker_heartbeat(QueueRepo())
+
+        self.assertEqual(recorded[0], recorded[1])
+        self.assertEqual(recorded[0][0], "worker_stable-random-id")
+        self.assertEqual(recorded[0][1], worker.APP_VERSION)
 
 
 if __name__ == "__main__":

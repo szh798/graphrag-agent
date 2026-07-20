@@ -46,23 +46,35 @@ async function invoke({
 }
 
 async function createBatch(db, questions, options = {}) {
+  const { engine, retrievalMode, ...invokeOptions } = options
   const created = await invoke({
     db,
     path: '/api/v1/query/batch',
     method: 'POST',
-    body: { questions },
-    ...options,
+    body: {
+      questions,
+      ...(engine === undefined ? {} : { engine }),
+      ...(retrievalMode === undefined
+        ? {}
+        : { retrieval_mode: retrievalMode }),
+    },
+    ...invokeOptions,
   })
   assert.equal(created.response.status, 202)
   assert.equal(created.payload.code, 0)
   return created.payload.data
 }
 
-function backendSuccess(answerFor = question => `answer:${question}`) {
+function backendSuccess(
+  answerFor = question => `answer:${question}`,
+  { engine = 'legacy', retrievalMode = null } = {},
+) {
   const calls = []
+  const bodies = []
   const fetcher = async request => {
     calls.push(request)
     const body = await request.json()
+    bodies.push(body)
     assert.equal(request.redirect, 'manual')
     assert.equal(request.headers.get('x-graphrag-proxy-secret'), PROXY_SECRET)
     assert.equal(request.headers.get('x-graphrag-visitor-id'), VISITOR_A)
@@ -70,6 +82,12 @@ function backendSuccess(answerFor = question => `answer:${question}`) {
     assert.equal(request.headers.get('x-graphrag-public-demo'), '1')
     assert.deepEqual(body.history, [])
     assert.equal('session_id' in body, false)
+    assert.equal(body.engine, engine)
+    if (engine === 'lightrag') {
+      assert.equal(body.retrieval_mode, retrievalMode)
+    } else {
+      assert.equal('retrieval_mode' in body, false)
+    }
     return Response.json({
       code: 0,
       msg: 'success',
@@ -87,7 +105,7 @@ function backendSuccess(answerFor = question => `answer:${question}`) {
       },
     })
   }
-  return { calls, fetcher }
+  return { calls, bodies, fetcher }
 }
 
 test('create/list/detail/cancel are visitor-isolated and keep the batch contract', async t => {
@@ -99,8 +117,10 @@ test('create/list/detail/cancel are visitor-isolated and keep the batch contract
   assert.match(created.batch_id, /^batch_[0-9a-f]{10}$/)
   assert.deepEqual(
     Object.keys(created).sort(),
-    ['batch_id', 'created_at', 'status', 'total'],
+    ['batch_id', 'created_at', 'engine', 'retrieval_mode', 'status', 'total'],
   )
+  assert.equal(created.engine, 'legacy')
+  assert.equal(created.retrieval_mode, null)
 
   const ownList = await invoke({
     db,
@@ -109,6 +129,8 @@ test('create/list/detail/cancel are visitor-isolated and keep the batch contract
   })
   assert.equal(ownList.payload.data.total, 1)
   assert.equal(ownList.payload.data.items[0].batch_id, created.batch_id)
+  assert.equal(ownList.payload.data.items[0].engine, 'legacy')
+  assert.equal(ownList.payload.data.items[0].retrieval_mode, null)
 
   const otherList = await invoke({
     db,
@@ -158,6 +180,90 @@ test('create/list/detail/cancel are visitor-isolated and keep the batch contract
   })
   assert.equal(detail.payload.data.status, 'cancelled')
   assert.equal(detail.payload.data.results.length, 0)
+})
+
+test('LightRAG batches permanently pin the selected engine and retrieval mode', async t => {
+  const db = new TestD1Database()
+  t.after(() => db.close())
+  const nowMs = Date.now()
+  const created = await createBatch(db, ['local fact', 'global relation'], {
+    engine: 'lightrag',
+    retrievalMode: 'hybrid',
+    nowMs,
+  })
+
+  assert.equal(created.engine, 'lightrag')
+  assert.equal(created.retrieval_mode, 'hybrid')
+  const stored = db.rows(
+    'SELECT engine, retrieval_mode FROM public_batches WHERE batch_id = ?',
+    created.batch_id,
+  )[0]
+  assert.equal(stored.engine, 'lightrag')
+  assert.equal(stored.retrieval_mode, 'hybrid')
+
+  const backend = backendSuccess(undefined, {
+    engine: 'lightrag',
+    retrievalMode: 'hybrid',
+  })
+
+  // Query-string attempts cannot mutate an already-created batch. The stored
+  // engine contract is forwarded for every item instead.
+  await invoke({
+    db,
+    path: `/api/v1/query/batch/${created.batch_id}?engine=legacy&retrieval_mode=naive`,
+    fetcher: backend.fetcher,
+    nowMs,
+  })
+  const finished = await invoke({
+    db,
+    path: `/api/v1/query/batch/${created.batch_id}?engine=legacy&retrieval_mode=local`,
+    fetcher: backend.fetcher,
+    nowMs: nowMs + 1,
+  })
+
+  assert.equal(finished.payload.data.status, 'done')
+  assert.equal(finished.payload.data.engine, 'lightrag')
+  assert.equal(finished.payload.data.retrieval_mode, 'hybrid')
+  assert.equal(backend.calls.length, 2)
+  assert.deepEqual(
+    backend.bodies.map(body => [body.engine, body.retrieval_mode]),
+    [
+      ['lightrag', 'hybrid'],
+      ['lightrag', 'hybrid'],
+    ],
+  )
+})
+
+test('batch creation validates dual-engine values and defaults LightRAG to mix', async t => {
+  const db = new TestD1Database()
+  t.after(() => db.close())
+
+  const defaultMix = await createBatch(db, ['question'], {
+    engine: 'lightrag',
+  })
+  assert.equal(defaultMix.retrieval_mode, 'mix')
+
+  const invalidEngine = await invoke({
+    db,
+    path: '/api/v1/query/batch',
+    method: 'POST',
+    body: { questions: ['question'], engine: 'automatic' },
+  })
+  assert.equal(invalidEngine.response.status, 400)
+  assert.equal(invalidEngine.payload.code, 1001)
+
+  const invalidMode = await invoke({
+    db,
+    path: '/api/v1/query/batch',
+    method: 'POST',
+    body: {
+      questions: ['question'],
+      engine: 'lightrag',
+      retrieval_mode: 'automatic',
+    },
+  })
+  assert.equal(invalidMode.response.status, 400)
+  assert.equal(invalidMode.payload.code, 1001)
 })
 
 test('detail advances exactly one item and strips temporary sessions before D1 persistence', async t => {
@@ -426,15 +532,65 @@ test('opaque malformed path segments never throw during batch route matching', (
   )
 })
 
-test('generated Drizzle migration applies successfully in its emitted order', t => {
+test('runtime schema migration keeps pre-dual-engine batches on legacy', async t => {
   const db = new TestD1Database()
   t.after(() => db.close())
-  const migration = readFileSync(
+  const oldMigration = readFileSync(
     new URL('../drizzle/0001_parched_the_watchers.sql', import.meta.url),
     'utf8',
   )
-  for (const sql of migration.split('--> statement-breakpoint')) {
+  for (const sql of oldMigration.split('--> statement-breakpoint')) {
     if (sql.trim()) db.database.exec(sql)
+  }
+
+  const nowMs = Date.now()
+  db.run(
+    `INSERT INTO public_batches (
+       batch_id, visitor_id, total, completed, failed, status,
+       cancel_requested, created_at, updated_at, expires_at
+     ) VALUES (?, ?, 0, 0, 0, 'done', 0, ?, ?, ?)`,
+    'batch_pre_dual',
+    VISITOR_A,
+    nowMs,
+    nowMs,
+    nowMs + publicBatchConstants.BATCH_TTL_MS,
+  )
+
+  const listed = await invoke({
+    db,
+    path: '/api/v1/query/batch',
+    nowMs,
+  })
+  assert.equal(listed.payload.data.total, 1)
+  assert.equal(listed.payload.data.items[0].engine, 'legacy')
+  assert.equal(listed.payload.data.items[0].retrieval_mode, null)
+
+  const columns = db.rows('PRAGMA table_info(public_batches)')
+  assert.equal(columns.some(column => column.name === 'engine'), true)
+  assert.equal(columns.some(column => column.name === 'retrieval_mode'), true)
+  const stored = db.rows(
+    'SELECT engine, retrieval_mode FROM public_batches WHERE batch_id = ?',
+    'batch_pre_dual',
+  )[0]
+  assert.equal(stored.engine, 'legacy')
+  assert.equal(stored.retrieval_mode, null)
+})
+
+test('generated Drizzle migration applies successfully in its emitted order', t => {
+  const db = new TestD1Database()
+  t.after(() => db.close())
+  for (const filename of [
+    '0000_mixed_blur.sql',
+    '0001_parched_the_watchers.sql',
+    '0002_flimsy_plazm.sql',
+  ]) {
+    const migration = readFileSync(
+      new URL(`../drizzle/${filename}`, import.meta.url),
+      'utf8',
+    )
+    for (const sql of migration.split('--> statement-breakpoint')) {
+      if (sql.trim()) db.database.exec(sql)
+    }
   }
   assert.equal(
     db.rows(
@@ -442,4 +598,7 @@ test('generated Drizzle migration applies successfully in its emitted order', t 
     )[0].total,
     2,
   )
+  const columns = db.rows('PRAGMA table_info(public_batches)')
+  assert.equal(columns.some(column => column.name === 'engine'), true)
+  assert.equal(columns.some(column => column.name === 'retrieval_mode'), true)
 })

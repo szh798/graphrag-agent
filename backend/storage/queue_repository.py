@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import threading
 import time
 from urllib.parse import quote
 
@@ -12,6 +14,18 @@ INDEX_QUEUE_KEY = os.getenv("INDEX_QUEUE_KEY", "graphrag:index:queue")
 INDEX_PROCESSING_KEY = os.getenv("INDEX_PROCESSING_KEY", f"{INDEX_QUEUE_KEY}:processing")
 INDEX_JOB_LEASE_SECONDS = max(60, int(os.getenv("INDEX_JOB_LEASE_SECONDS", "330")))
 INDEX_JOB_MAX_RECOVERIES = max(0, int(os.getenv("INDEX_JOB_MAX_RECOVERIES", "2")))
+INDEX_OWNER_LOCK_SECONDS = max(
+    INDEX_JOB_LEASE_SECONDS + 60,
+    int(os.getenv("INDEX_OWNER_LOCK_SECONDS", str(INDEX_JOB_LEASE_SECONDS * 2))),
+)
+INDEX_OWNER_LOCK_PREFIX = os.getenv(
+    "INDEX_OWNER_LOCK_PREFIX", "graphrag:index:owner-lock"
+)
+
+_LOCAL_OWNER_LOCKS: dict[str, str] = {}
+_LOCAL_OWNER_LOCKS_GUARD = threading.Lock()
+_LOCAL_WORKER_HEARTBEAT: dict | None = None
+_LOCAL_WORKER_HEARTBEAT_GUARD = threading.Lock()
 
 _CLAIM_SCRIPT = """
 local raw = redis.call('RPOP', KEYS[1])
@@ -45,6 +59,104 @@ end
 return cjson.encode({recovered = recovered, exhausted = exhausted})
 """.strip()
 
+_RELEASE_OWNER_LOCK_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+""".strip()
+
+_REFRESH_OWNER_LOCK_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+""".strip()
+
+_REFRESH_PROCESSING_LEASE_SCRIPT = """
+if redis.call('ZSCORE', KEYS[1], ARGV[1]) then
+  redis.call('ZADD', KEYS[1], ARGV[2], ARGV[1])
+  return 1
+end
+return 0
+""".strip()
+
+
+def _owner_lock_key(owner_id: str) -> str:
+    # Tenant identifiers can contain Clerk user/org IDs. Redis keys expose only
+    # a deterministic digest, never the raw identity.
+    digest = hashlib.sha256(str(owner_id).encode("utf-8")).hexdigest()
+    return f"{INDEX_OWNER_LOCK_PREFIX}:{digest}"
+
+
+def worker_heartbeat_key() -> str:
+    """Return the shared worker heartbeat key without caching env configuration."""
+    return os.getenv(
+        "INDEX_WORKER_HEARTBEAT_KEY",
+        f"{INDEX_QUEUE_KEY}:worker-heartbeat",
+    ).strip() or f"{INDEX_QUEUE_KEY}:worker-heartbeat"
+
+
+def worker_heartbeat_ttl_seconds() -> int:
+    """Bound heartbeat expiry so a bad env value cannot create immortal health."""
+    try:
+        configured = int(os.getenv("INDEX_WORKER_HEARTBEAT_TTL_SECONDS", "120"))
+    except (TypeError, ValueError):
+        configured = 120
+    return min(3600, max(30, configured))
+
+
+def _heartbeat_payload(
+    worker_id: str,
+    version: str,
+    *,
+    last_seen: int | float | None = None,
+) -> dict:
+    normalized_worker_id = str(worker_id or "").strip()
+    normalized_version = str(version or "").strip()
+    if not normalized_worker_id:
+        raise ValueError("worker_id is required")
+    if not normalized_version:
+        raise ValueError("worker version is required")
+    observed_at = int(time.time() if last_seen is None else last_seen)
+    if observed_at <= 0:
+        raise ValueError("last_seen must be a positive Unix timestamp")
+    return {
+        "worker_id": normalized_worker_id,
+        "version": normalized_version,
+        "last_seen": observed_at,
+    }
+
+
+def _heartbeat_status(payload: dict | None) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        normalized = _heartbeat_payload(
+            payload.get("worker_id", ""),
+            payload.get("version", ""),
+            last_seen=payload.get("last_seen"),
+        )
+    except (TypeError, ValueError):
+        return {
+            "fresh": False,
+            "malformed": True,
+            "ttl_seconds": worker_heartbeat_ttl_seconds(),
+        }
+
+    now = int(time.time())
+    ttl_seconds = worker_heartbeat_ttl_seconds()
+    # A heartbeat far in the future usually means the producer clock is bad;
+    # accepting it could keep readiness green indefinitely.
+    clock_skew_seconds = normalized["last_seen"] - now
+    age_seconds = max(0, now - normalized["last_seen"])
+    normalized.update({
+        "fresh": age_seconds <= ttl_seconds and clock_skew_seconds <= 30,
+        "age_seconds": age_seconds,
+        "ttl_seconds": ttl_seconds,
+    })
+    return normalized
+
 
 class LocalThreadQueueRepository:
     def profile(self) -> dict:
@@ -72,6 +184,50 @@ class LocalThreadQueueRepository:
 
     def recover_expired_jobs(self) -> dict[str, list[str]]:
         return {"recovered": [], "exhausted": []}
+
+    def acquire_index_owner_lock(self, owner_id: str, job_id: str) -> bool:
+        key = _owner_lock_key(owner_id)
+        with _LOCAL_OWNER_LOCKS_GUARD:
+            current = _LOCAL_OWNER_LOCKS.get(key)
+            if current not in {None, job_id}:
+                return False
+            _LOCAL_OWNER_LOCKS[key] = job_id
+            return True
+
+    def refresh_index_owner_lock(self, owner_id: str, job_id: str) -> bool:
+        key = _owner_lock_key(owner_id)
+        with _LOCAL_OWNER_LOCKS_GUARD:
+            return _LOCAL_OWNER_LOCKS.get(key) == job_id
+
+    def release_index_owner_lock(self, owner_id: str, job_id: str) -> bool:
+        key = _owner_lock_key(owner_id)
+        with _LOCAL_OWNER_LOCKS_GUARD:
+            if _LOCAL_OWNER_LOCKS.get(key) != job_id:
+                return False
+            _LOCAL_OWNER_LOCKS.pop(key, None)
+            return True
+
+    def refresh_index_job_lease(self, payload: dict) -> bool:
+        del payload
+        return True
+
+    def record_worker_heartbeat(
+        self,
+        worker_id: str,
+        version: str,
+        *,
+        last_seen: int | float | None = None,
+    ) -> dict:
+        global _LOCAL_WORKER_HEARTBEAT
+        payload = _heartbeat_payload(worker_id, version, last_seen=last_seen)
+        with _LOCAL_WORKER_HEARTBEAT_GUARD:
+            _LOCAL_WORKER_HEARTBEAT = dict(payload)
+        return _heartbeat_status(payload) or {}
+
+    def get_worker_heartbeat(self) -> dict | None:
+        with _LOCAL_WORKER_HEARTBEAT_GUARD:
+            payload = dict(_LOCAL_WORKER_HEARTBEAT) if _LOCAL_WORKER_HEARTBEAT else None
+        return _heartbeat_status(payload)
 
 
 class UpstashRedisQueueRepository:
@@ -163,6 +319,89 @@ class UpstashRedisQueueRepository:
             "exhausted": [str(job_id) for job_id in recovered.get("exhausted", []) if job_id],
         }
 
+    def acquire_index_owner_lock(self, owner_id: str, job_id: str) -> bool:
+        result = self._command(
+            "SET",
+            _owner_lock_key(owner_id),
+            job_id,
+            "NX",
+            "EX",
+            str(INDEX_OWNER_LOCK_SECONDS),
+        ).get("result")
+        return str(result or "").upper() == "OK"
+
+    def refresh_index_owner_lock(self, owner_id: str, job_id: str) -> bool:
+        result = self._command(
+            "EVAL",
+            _REFRESH_OWNER_LOCK_SCRIPT,
+            "1",
+            _owner_lock_key(owner_id),
+            job_id,
+            str(INDEX_OWNER_LOCK_SECONDS),
+        ).get("result")
+        return int(result or 0) == 1
+
+    def release_index_owner_lock(self, owner_id: str, job_id: str) -> bool:
+        result = self._command(
+            "EVAL",
+            _RELEASE_OWNER_LOCK_SCRIPT,
+            "1",
+            _owner_lock_key(owner_id),
+            job_id,
+        ).get("result")
+        return int(result or 0) == 1
+
+    def refresh_index_job_lease(self, payload: dict) -> bool:
+        receipt = payload.get("_queue_receipt")
+        if not receipt:
+            return False
+        lease_expires_at = int(time.time()) + INDEX_JOB_LEASE_SECONDS
+        result = self._command(
+            "EVAL",
+            _REFRESH_PROCESSING_LEASE_SCRIPT,
+            "1",
+            INDEX_PROCESSING_KEY,
+            str(receipt),
+            str(lease_expires_at),
+        ).get("result")
+        return int(result or 0) == 1
+
+    def record_worker_heartbeat(
+        self,
+        worker_id: str,
+        version: str,
+        *,
+        last_seen: int | float | None = None,
+    ) -> dict:
+        payload = _heartbeat_payload(worker_id, version, last_seen=last_seen)
+        result = self._command(
+            "SET",
+            worker_heartbeat_key(),
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            "EX",
+            str(worker_heartbeat_ttl_seconds()),
+        ).get("result")
+        if str(result or "").upper() != "OK":
+            raise RuntimeError("worker heartbeat was not persisted")
+        return _heartbeat_status(payload) or {}
+
+    def get_worker_heartbeat(self) -> dict | None:
+        raw = self._command("GET", worker_heartbeat_key()).get("result")
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            payload = raw
+        else:
+            try:
+                payload = json.loads(str(raw))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {
+                    "fresh": False,
+                    "malformed": True,
+                    "ttl_seconds": worker_heartbeat_ttl_seconds(),
+                }
+        return _heartbeat_status(payload)
+
 
 _CACHE_KEY: tuple[str, str, str] | None = None
 _CACHE_REPO: LocalThreadQueueRepository | UpstashRedisQueueRepository | None = None
@@ -186,6 +425,8 @@ def get_queue_repository() -> LocalThreadQueueRepository | UpstashRedisQueueRepo
 
 
 def reset_queue_repository_cache() -> None:
-    global _CACHE_KEY, _CACHE_REPO
+    global _CACHE_KEY, _CACHE_REPO, _LOCAL_WORKER_HEARTBEAT
     _CACHE_KEY = None
     _CACHE_REPO = None
+    with _LOCAL_WORKER_HEARTBEAT_GUARD:
+        _LOCAL_WORKER_HEARTBEAT = None

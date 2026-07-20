@@ -76,7 +76,7 @@ test('desktop public document workflow is understandable and accessible', async 
   await expect(page.getByRole('button', { name: '上传文档' })).toBeEnabled();
   await expect(page.getByRole('combobox', { name: '按文档格式筛选' })).toHaveValue('All');
   await expect(page.getByRole('combobox', { name: '按索引状态筛选' })).toHaveValue('All');
-  await expect(page.locator('.documents-table').getByText('已索引', { exact: true })).toBeVisible();
+  await expect(page.locator('.documents-table').getByText('经典 · 已索引', { exact: true })).toBeVisible();
   await expect(page.getByText('v1.1.0')).toBeVisible();
 
   const scan = await new AxeBuilder({ page })

@@ -1,6 +1,9 @@
 """Document Service — file upload, metadata CRUD."""
 from __future__ import annotations
 
+import os
+import hashlib
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +32,7 @@ INTRINSIC_SINGLE_PAGE_EXTENSIONS = {"png", "jpg", "jpeg", "txt", "md", "markdown
 MAX_FILE_SIZE_MB = 200
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 _INDEXING_DOCUMENT_STATUSES = {"submitted", "queued", "parsing", "extracting", "indexing"}
+_document_update_lock = threading.RLock()
 
 _GENERIC_MIME_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 _ALLOWED_MIME_TYPES = {
@@ -80,9 +84,136 @@ def normalize_document_status(status: object) -> str:
     return "unknown"
 
 
+def _engine_status_from_document(status: object) -> str:
+    value = normalize_document_status(status)
+    return {
+        "indexed": "done",
+        "indexing": "indexing",
+        "failed": "failed",
+        "uploaded": "pending",
+    }.get(value, "pending")
+
+
+def _initial_indexes() -> dict[str, dict]:
+    lightrag_enabled = os.getenv("LIGHTRAG_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "legacy": {"status": "pending", "job_id": None, "error": None, "stats": {}},
+        "lightrag": {
+            "status": "pending" if lightrag_enabled else "disabled",
+            "job_id": None,
+            "error": None,
+            "stats": {},
+        },
+    }
+
+
+def normalized_indexes(doc: dict) -> dict[str, dict]:
+    """Return the dual-index state, repairing rows created before dual engines."""
+    raw = doc.get("indexes") if isinstance(doc.get("indexes"), dict) else {}
+    defaults = _initial_indexes()
+    indexes: dict[str, dict] = {}
+    for engine in ("legacy", "lightrag"):
+        value = raw.get(engine) if isinstance(raw.get(engine), dict) else {}
+        indexes[engine] = {**defaults[engine], **value}
+
+    # The top-level status remains the legacy compatibility contract and is
+    # authoritative for records that predate per-engine metadata.
+    if not isinstance(raw.get("legacy"), dict):
+        indexes["legacy"]["status"] = _engine_status_from_document(doc.get("status"))
+    return indexes
+
+
+def lightrag_tenant_for_document(doc: dict, *, persist: bool = False) -> str:
+    """Return the immutable logical LightRAG scope for a document.
+
+    Older rows are classified once from PUBLIC_DOCUMENT_IDS. Newer rows keep
+    ``lightrag_workspace_scope`` so later environment changes or account-wide
+    deletion cannot target the wrong workspace.
+    """
+
+    scope = str(doc.get("lightrag_workspace_scope") or "").strip().lower()
+    if scope == "public_demo":
+        return "public_demo"
+    if scope == "owner":
+        return str(doc.get("owner_id") or "default")
+
+    doc_id = str(doc.get("doc_id") or "")
+    public_ids = {
+        item.strip()
+        for item in os.getenv("PUBLIC_DOCUMENT_IDS", "").split(",")
+        if item.strip()
+    }
+    scope = "public_demo" if doc_id in public_ids else "owner"
+    tenant_id = "public_demo" if scope == "public_demo" else str(doc.get("owner_id") or "default")
+    if persist and doc_id:
+        with _document_update_lock:
+            repo = app_store.get_app_repository()
+            current = repo.get_document(doc_id)
+            if current and not current.get("lightrag_workspace_scope"):
+                current["lightrag_workspace_scope"] = scope
+                repo.save_document(current)
+                doc["lightrag_workspace_scope"] = scope
+    return tenant_id
+
+
+def update_engine_index_status(
+    doc_id: str,
+    engine: str,
+    status: str,
+    *,
+    job_id: str | None = None,
+    error: str | None = None,
+    stats: dict | None = None,
+    pages: int | None = None,
+) -> dict | None:
+    if engine not in {"legacy", "lightrag"}:
+        raise ValueError(f"Unsupported engine: {engine}")
+    with _document_update_lock:
+        repo = app_store.get_app_repository()
+        get_document = getattr(repo, "get_document", None)
+        if not callable(get_document):
+            return None
+        doc = get_document(doc_id)
+        if not doc:
+            return None
+        indexes = normalized_indexes(doc)
+        state = dict(indexes[engine])
+        state["status"] = status
+        if job_id is not None:
+            state["job_id"] = job_id
+        state["error"] = error
+        if stats is not None:
+            state["stats"] = stats
+        indexes[engine] = state
+        doc["indexes"] = indexes
+        if pages is not None:
+            doc["pages"] = pages
+        if engine == "legacy":
+            doc["status"] = {
+                "done": "indexed",
+                "failed": "failed",
+                "cancelled": "uploaded",
+                "pending": "uploaded",
+            }.get(status, "indexing")
+        save_document = getattr(repo, "save_document", None)
+        if callable(save_document):
+            save_document(doc)
+        elif engine == "legacy":
+            update_status = getattr(repo, "update_document_status", None)
+            if callable(update_status):
+                update_status(doc_id, doc["status"], pages)
+        return doc
+
+
 def public_document(doc: dict) -> dict:
     """Return a frontend/API-safe document payload."""
     item = dict(doc)
+    if "status" in item or "indexes" in item:
+        item["indexes"] = normalized_indexes(item)
+        item["available_engines"] = [
+            engine for engine in ("legacy", "lightrag")
+            if item["indexes"].get(engine, {}).get("status") == "done"
+        ]
     if "status" in item:
         item["status"] = normalize_document_status(item.get("status"))
     file_format = str(item.get("format") or Path(str(item.get("filename") or "")).suffix.lstrip(".")).lower()
@@ -95,7 +226,15 @@ def public_document(doc: dict) -> dict:
     if uploaded_at:
         item["uploaded_at"] = uploaded_at
         item["upload_date"] = uploaded_at
-    for internal_key in ("upload_filename", "blob_key", "blob_url", "blob_ref", "owner_id", "actor_id"):
+    for internal_key in (
+        "upload_filename",
+        "blob_key",
+        "blob_url",
+        "blob_ref",
+        "owner_id",
+        "actor_id",
+        "lightrag_workspace_scope",
+    ):
         item.pop(internal_key, None)
     return item
 
@@ -206,6 +345,7 @@ def _save_document_record(
         "blob_ref": blob_ref,
         "content_type": content_type or blob_ref.get("contentType") or blob_ref.get("content_type"),
         "owner_id": owner_id,
+        "indexes": _initial_indexes(),
     }
     if actor_id:
         doc["actor_id"] = actor_id
@@ -247,7 +387,18 @@ def register_direct_upload(
     normalized_blob["key"] = pathname
     normalized_blob["download_url"] = download_url
     normalized_blob["content_type"] = mime
-    doc_id = uuid.uuid4().hex[:8]
+    repo = app_store.get_app_repository()
+    find_existing = getattr(repo, "find_document_by_blob", None)
+    if callable(find_existing):
+        existing = find_existing(owner_id, pathname)
+        if existing:
+            return existing
+
+    # Vercel may redeliver the completion callback. A deterministic ID makes
+    # concurrent deliveries converge on the same business row as well.
+    doc_id = hashlib.sha256(
+        f"{owner_id}\x00{pathname}".encode("utf-8")
+    ).hexdigest()[:16]
     return _save_document_record(
         doc_id=doc_id,
         filename=filename,
@@ -294,10 +445,13 @@ def list_documents(page: int = 1, page_size: int = 20,
     for item in items[start: start + page_size]:
         public_item = public_document(item)
         latest_job = latest_jobs.get(str(item.get("doc_id") or ""))
-        if latest_job and public_item.get("status") == "indexing":
+        if latest_job:
             job_status = str(latest_job.get("status") or "").strip().lower()
             if job_status in _INDEXING_DOCUMENT_STATUSES:
                 public_item["job_id"] = latest_job.get("job_id")
+                public_item["index_job_status"] = job_status
+                public_item["index_stage"] = latest_job.get("stage")
+                public_item["progress"] = latest_job.get("progress")
         if latest_job and public_item.get("status") == "failed" and latest_job.get("status") == "failed":
             public_item["error_msg"] = latest_job.get("error") or latest_job.get("stage")
         public_items.append(public_item)
@@ -312,9 +466,26 @@ def list_documents(page: int = 1, page_size: int = 20,
 
 def delete_document(doc_id: str) -> tuple[bool, int, int]:
     """Delete doc and its KG contributions. Returns (ok, removed_nodes, removed_edges)."""
-    doc = app_store.get_app_repository().get_document(doc_id)
+    app_repo = app_store.get_app_repository()
+    doc = app_repo.get_document(doc_id)
     if not doc:
         return False, 0, 0
+
+    # Cancel before removing any artifact or application row. Detached
+    # cancellation metadata intentionally survives document/tenant cleanup so
+    # a queued or already-running Worker cannot publish stale results later.
+    from services import indexing_service
+
+    cancelled_job_ids = set(indexing_service.cancel_document_jobs(doc_id, detach=True))
+    indexing_service.purge_cancelled_job_artifacts(cancelled_job_ids)
+
+    # LightRAG deletion is idempotent and durable. It is scheduled before the
+    # application row is removed so all workspace/page identifiers are retained.
+    from services import lightrag_deletion_service
+
+    doc_for_delete = {**doc, "indexes": normalized_indexes(doc)}
+    doc_for_delete["lightrag_tenant_id"] = lightrag_tenant_for_document(doc)
+    lightrag_deletion_service.delete_or_schedule(doc_for_delete)
 
     # Remove from KG
     removed_nodes, removed_edges = graph_store.get_graph_repository().remove_document(doc_id)
@@ -330,8 +501,9 @@ def delete_document(doc_id: str) -> tuple[bool, int, int]:
             upload_path.unlink(missing_ok=True)
 
     # Remove associated jobs
-    app_repo = app_store.get_app_repository()
     for meta in app_repo.list_all_jobs():
+        if str(meta.get("job_id") or "") in cancelled_job_ids:
+            continue
         if meta.get("doc_id") == doc_id:
             for artifact in (meta.get("artifacts") or {}).values():
                 if isinstance(artifact, dict):
@@ -350,10 +522,18 @@ def update_doc_status(doc_id: str, status: str, pages: int | None = None) -> Non
 
 
 def _latest_done_job(doc_id: str) -> dict | None:
-    jobs = [
-        meta for meta in app_store.get_app_repository().list_all_jobs()
-        if meta.get("doc_id") == doc_id and meta.get("status") == "done"
-    ]
+    jobs: list[dict] = []
+    for meta in app_store.get_app_repository().list_all_jobs():
+        if meta.get("doc_id") != doc_id or meta.get("status") not in {"done", "partial"}:
+            continue
+        targets = meta.get("target_engines")
+        # Pre-dual jobs did not persist target_engines and were classic-only.
+        if targets is not None and "legacy" not in set(targets):
+            continue
+        legacy = (meta.get("engines") or {}).get("legacy")
+        if isinstance(legacy, dict) and legacy.get("status") != "done":
+            continue
+        jobs.append(meta)
     if not jobs:
         return None
     return sorted(jobs, key=lambda meta: meta.get("created_at", ""), reverse=True)[0]

@@ -1,8 +1,10 @@
 import importlib.util
+import hashlib
 import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header
@@ -12,6 +14,7 @@ from models.schemas import APIResponse
 from public_access import PUBLIC_DEMO_HEADER, visible_document_ids
 from pipeline.llm_config import LLM_API_KEY, LLM_BASE_URL, LLM_INDEX_MODEL, LLM_MODEL, LLM_PROVIDER
 from services.local_parser import SUPPORTED_LOCAL_EXTENSIONS
+from services import async_bridge
 from storage import app_repository as app_store
 from storage import blob_repository as blob_store
 from storage import file_store as fs
@@ -32,6 +35,21 @@ _PUBLIC_COMPONENT_FIELDS = {
     "persistence",
     "mode",
     "active_parser",
+    "version",
+    "detail",
+    "enabled",
+    "configured",
+    "queue_depth",
+    "total",
+    "done",
+    "pending",
+    "failed",
+    "worker_id",
+    "last_seen",
+    "last_updated",
+    "heartbeat_age_seconds",
+    "heartbeat_ttl_seconds",
+    "maintenance_status",
 }
 
 
@@ -112,7 +130,320 @@ def _production_dependency_issues(components: dict[str, dict]) -> list[str]:
     queue = components.get("task_queue", {})
     if queue.get("status") != "ok" or not queue.get("durable"):
         issues.append("task_queue")
+    if os.getenv("LIGHTRAG_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        for name in ("lightrag", "lightrag_worker", "lightrag_graph_database", "lightrag_vector_database", "lightrag_reranker"):
+            if components.get(name, {}).get("status") != "ok":
+                issues.append(name)
     return issues
+
+
+def _lightrag_health() -> dict:
+    from services import lightrag_service
+
+    if not lightrag_service.enabled():
+        return {
+            "status": "ok",
+            "mode": "disabled",
+            "configured": False,
+            "version": os.getenv("LIGHTRAG_VERSION", "1.5.4"),
+            "components": {},
+        }
+    try:
+        result = async_bridge.run(lightrag_service.health(probe=True))
+        core_status = str(result.get("status") or "").lower()
+        ready = bool(result.get("ready")) or core_status in {"ok", "ready", "healthy"}
+        return {
+            **result,
+            "status": "ok" if ready else "error",
+            "mode": result.get("transport") or result.get("mode"),
+            "configured": True,
+            "version": result.get("target_version") or result.get("installed_version") or os.getenv("LIGHTRAG_VERSION", "1.5.4"),
+            "detail": f"LightRAG runtime status: {core_status or 'unknown'}",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "mode": os.getenv("LIGHTRAG_TRANSPORT", "remote"),
+            "configured": True,
+            "version": os.getenv("LIGHTRAG_VERSION", "1.5.4"),
+            "detail": f"LightRAG health probe failed ({type(exc).__name__})",
+            "components": {},
+        }
+
+
+def _lightrag_component(base: dict, *names: str, default_detail: str) -> dict:
+    components = base.get("components") if isinstance(base.get("components"), dict) else {}
+    for name in names:
+        value = components.get(name)
+        if isinstance(value, dict):
+            return value
+    disabled = base.get("mode") == "disabled" or base.get("enabled") is False
+    return {
+        "status": "ok" if disabled else "error",
+        "mode": base.get("mode"),
+        "configured": base.get("configured", False),
+        "version": base.get("version"),
+        "detail": default_detail,
+    }
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _iso_timestamp(value: object) -> str | None:
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _safe_nonnegative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _iso_age_seconds(value: object) -> int | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - observed).total_seconds()))
+
+
+def _lightrag_worker_component(queue_repo, lightrag_health: dict) -> dict:
+    """Report the real long-running Worker, never the API dependency probe."""
+    enabled = bool(lightrag_health.get("configured")) and lightrag_health.get("mode") != "disabled"
+    if not enabled:
+        return {
+            "status": "ok",
+            "mode": "disabled",
+            "enabled": False,
+            "configured": False,
+            "detail": "LightRAG is disabled; no indexing worker is required.",
+        }
+
+    try:
+        profile = queue_repo.profile()
+    except Exception:
+        profile = {}
+    backend = str(profile.get("backend") or "unknown")
+    durable = bool(profile.get("durable"))
+    base = {
+        "backend": backend,
+        "durable": durable,
+        "enabled": True,
+        "configured": durable,
+    }
+    if not durable:
+        return {
+            **base,
+            "status": "error",
+            "mode": "non_durable",
+            "detail": "Worker readiness requires a durable shared queue heartbeat.",
+        }
+
+    reader = getattr(queue_repo, "get_worker_heartbeat", None)
+    if not callable(reader):
+        return {
+            **base,
+            "status": "error",
+            "mode": "unsupported",
+            "detail": "The configured queue backend cannot read Worker heartbeats.",
+        }
+    try:
+        heartbeat = reader()
+    except Exception as exc:
+        return {
+            **base,
+            "status": "error",
+            "mode": "unavailable",
+            "detail": f"Worker heartbeat lookup failed ({type(exc).__name__}).",
+        }
+    if not heartbeat:
+        return {
+            **base,
+            "status": "error",
+            "mode": "missing",
+            "detail": "No Railway Worker heartbeat is present.",
+        }
+    if heartbeat.get("malformed"):
+        return {
+            **base,
+            "status": "error",
+            "mode": "malformed",
+            "heartbeat_ttl_seconds": heartbeat.get("ttl_seconds"),
+            "detail": "The stored Railway Worker heartbeat is malformed.",
+        }
+
+    last_seen = _iso_timestamp(heartbeat.get("last_seen"))
+    worker_id = str(heartbeat.get("worker_id") or "")
+    version = str(heartbeat.get("version") or "")
+    observed = {
+        **base,
+        "worker_id": hashlib.sha256(worker_id.encode("utf-8")).hexdigest()[:12] if worker_id else None,
+        "version": version or None,
+        "last_seen": last_seen,
+        "heartbeat_age_seconds": heartbeat.get("age_seconds"),
+        "heartbeat_ttl_seconds": heartbeat.get("ttl_seconds"),
+    }
+    if heartbeat.get("fresh") is not True or last_seen is None or not worker_id or not version:
+        return {
+            **observed,
+            "status": "error",
+            "mode": "stale",
+            "detail": "The Railway Worker heartbeat has expired.",
+        }
+    if version != APP_VERSION:
+        return {
+            **observed,
+            "status": "error",
+            "mode": "version_mismatch",
+            "detail": "The Railway Worker release does not match the public gateway.",
+        }
+
+    internal_worker = _lightrag_component(
+        lightrag_health,
+        "worker",
+        "queue",
+        default_detail="LightRAG runtime queue",
+    )
+    return {
+        **observed,
+        "status": "ok",
+        "mode": "active",
+        "queue_depth": internal_worker.get("queue_depth"),
+        "detail": "Railway Worker heartbeat is current.",
+    }
+
+
+def _lightrag_backfill_component(
+    app_repo,
+    queue_repo,
+    documents: list[dict],
+    lightrag_health: dict,
+) -> dict:
+    """Expose the configured switch, durable maintenance state and failures."""
+    from scripts.lightrag_backfill_worker import _startup_state_id
+
+    states = [
+        str(((document.get("indexes") or {}).get("lightrag") or {}).get("status") or "pending")
+        for document in documents
+    ]
+    total = len(states)
+    done = sum(1 for state in states if state == "done")
+    pending = sum(1 for state in states if state in {"pending", "queued", "indexing", "disabled"})
+    document_failures = sum(1 for state in states if state == "failed")
+
+    enabled = _env_truthy("LIGHTRAG_BACKFILL_ON_START")
+    acknowledged = os.getenv("LIGHTRAG_BACKFILL_ALL_TENANTS_ACK", "") == "YES"
+    lightrag_enabled = bool(lightrag_health.get("configured")) and lightrag_health.get("mode") != "disabled"
+    try:
+        durable = bool(queue_repo.is_durable())
+    except Exception:
+        durable = False
+
+    state = app_repo.load_job_meta(_startup_state_id())
+    maintenance_status = str((state or {}).get("status") or "not_started")
+    progress = (state or {}).get("progress") if isinstance((state or {}).get("progress"), dict) else {}
+    report = (state or {}).get("report") if isinstance((state or {}).get("report"), dict) else {}
+    reported_failures = max(
+        _safe_nonnegative_int(progress.get("failed")),
+        _safe_nonnegative_int(report.get("documents_failed")),
+    )
+    failed = max(document_failures, reported_failures)
+    configured = enabled and acknowledged and lightrag_enabled and durable
+    base = {
+        "enabled": enabled,
+        "configured": configured,
+        "total": total,
+        "done": done,
+        "pending": pending,
+        "failed": failed,
+        "maintenance_status": maintenance_status,
+        "last_updated": (state or {}).get("updated_at"),
+    }
+
+    if maintenance_status == "failed" or failed > 0:
+        return {
+            **base,
+            "status": "error",
+            "mode": "failed",
+            "detail": "LightRAG backfill has failed documents or a failed maintenance run.",
+        }
+    if not enabled:
+        return {
+            **base,
+            "status": "ok",
+            "mode": "disabled",
+            "detail": "Automatic LightRAG backfill is disabled.",
+        }
+    if not lightrag_enabled:
+        return {
+            **base,
+            "status": "error",
+            "mode": "blocked",
+            "detail": "Backfill is enabled while the LightRAG engine is disabled.",
+        }
+    if not acknowledged:
+        return {
+            **base,
+            "status": "error",
+            "mode": "blocked",
+            "detail": "Backfill requires the all-tenant acknowledgement.",
+        }
+    if not durable:
+        return {
+            **base,
+            "status": "error",
+            "mode": "blocked",
+            "detail": "Backfill requires the durable Upstash queue.",
+        }
+    if maintenance_status == "running":
+        state_age = _iso_age_seconds((state or {}).get("updated_at"))
+        try:
+            check_interval = max(60, int(os.getenv("LIGHTRAG_BACKFILL_INTERVAL_SECONDS", "300")))
+        except (TypeError, ValueError):
+            check_interval = 300
+        if state_age is None or state_age > check_interval * 2:
+            return {
+                **base,
+                "status": "error",
+                "mode": "stale",
+                "detail": "Backfill maintenance is stuck in a stale running state.",
+            }
+    if maintenance_status not in {"not_started", "running", "pending", "done"}:
+        return {
+            **base,
+            "status": "error",
+            "mode": "invalid_state",
+            "detail": "Backfill maintenance state is invalid.",
+        }
+    return {
+        **base,
+        "status": "ok",
+        "mode": "waiting" if maintenance_status == "not_started" else maintenance_status,
+        "detail": (
+            "Backfill maintenance has not started yet."
+            if maintenance_status == "not_started"
+            else "Backfill maintenance state is current."
+        ),
+    }
 
 
 def _health_payload() -> dict:
@@ -134,15 +465,18 @@ def _health_payload() -> dict:
     app_repo = app_store.get_app_repository()
     blob_repo = blob_store.get_blob_repository()
     queue_repo = queue_store.get_queue_repository()
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="health") as executor:
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="health") as executor:
         futures = {
             "graph_database": executor.submit(graph_repo.health),
             "app_database": executor.submit(app_repo.health),
             "blob_storage": executor.submit(blob_repo.health),
             "task_queue": executor.submit(queue_repo.health),
+            "lightrag": executor.submit(_lightrag_health),
         }
         dependency_health = {name: future.result() for name, future in futures.items()}
 
+    lightrag_health = dependency_health.pop("lightrag")
+    documents = app_repo.list_documents()
     raw_components: dict[str, dict] = {
         "document_parser": {
             "status": parser_status,
@@ -196,6 +530,17 @@ def _health_payload() -> dict:
             "uploads_dir_exists": fs.UPLOADS_DIR.exists(),
             **fs.storage_profile(),
         },
+        "lightrag": lightrag_health,
+        "lightrag_worker": _lightrag_worker_component(queue_repo, lightrag_health),
+        "lightrag_graph_database": _lightrag_component(lightrag_health, "neo4j", "graph_database", default_detail="Neo4j Aura graph storage"),
+        "lightrag_vector_database": _lightrag_component(lightrag_health, "postgres", "vector_database", default_detail="Dedicated Neon retrieval database"),
+        "lightrag_reranker": _lightrag_component(lightrag_health, "reranker", default_detail="BAAI/bge-reranker-v2-m3"),
+        "lightrag_backfill": _lightrag_backfill_component(
+            app_repo,
+            queue_repo,
+            documents,
+            lightrag_health,
+        ),
         **dependency_health,
     }
 

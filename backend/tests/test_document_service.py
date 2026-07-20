@@ -135,6 +135,42 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(result["items"][0]["status"], "indexing")
         self.assertEqual(result["items"][0]["job_id"], "job_active")
 
+    def test_list_documents_keeps_parent_job_visible_while_lightrag_is_active(self):
+        from services import document_service as svc
+
+        class FakeRepo:
+            def list_documents(self):
+                return [{
+                    "doc_id": "doc_dual",
+                    "filename": "notes.md",
+                    "format": "md",
+                    # Compatibility status follows the already-finished legacy child.
+                    "status": "indexed",
+                    "uploaded_at": "2026-07-17T00:00:00+00:00",
+                    "indexes": {
+                        "legacy": {"status": "done", "job_id": "job_dual"},
+                        "lightrag": {"status": "indexing", "job_id": "job_dual"},
+                    },
+                }]
+
+            def list_all_jobs(self):
+                return [{
+                    "job_id": "job_dual",
+                    "doc_id": "doc_dual",
+                    "status": "indexing",
+                    "stage": "LightRAG indexing",
+                    "progress": {"completed": 1, "total": 2},
+                    "created_at": "2026-07-17T00:01:00+00:00",
+                }]
+
+        with patch.object(svc.app_store, "get_app_repository", return_value=FakeRepo()):
+            item = svc.list_documents()["items"][0]
+
+        self.assertEqual(item["status"], "indexed")
+        self.assertEqual(item["job_id"], "job_dual")
+        self.assertEqual(item["index_job_status"], "indexing")
+        self.assertEqual(item["index_stage"], "LightRAG indexing")
+
     def test_upload_content_checks_mime_and_magic(self):
         from services.document_service import detect_supported_image_format, validate_upload_content
 
@@ -216,6 +252,38 @@ class DocumentServiceTests(unittest.TestCase):
                     "pathname": "uploads/demo.pdf",
                 },
             )
+
+    def test_completed_direct_upload_callback_is_idempotent_per_owner_and_blob(self):
+        from services import document_service as svc
+
+        documents: dict[str, dict] = {}
+
+        class FakeRepo:
+            def find_document_by_blob(self, owner_id, blob_key):
+                return next((
+                    dict(doc) for doc in documents.values()
+                    if doc.get("owner_id") == owner_id and doc.get("blob_key") == blob_key
+                ), None)
+
+            def save_document(self, doc):
+                documents[doc["doc_id"]] = dict(doc)
+
+        kwargs = {
+            "filename": "large.pdf",
+            "size_bytes": 1024,
+            "content_type": "application/pdf",
+            "blob_ref": {
+                "url": "https://store.private.blob.vercel-storage.com/uploads/large-random.pdf",
+                "pathname": "uploads/large-random.pdf",
+            },
+            "owner_id": "tenant_a",
+        }
+        with patch.object(svc.app_store, "get_app_repository", return_value=FakeRepo()):
+            first = svc.register_direct_upload(**kwargs)
+            second = svc.register_direct_upload(**kwargs)
+
+        self.assertEqual(first["doc_id"], second["doc_id"])
+        self.assertEqual(len(documents), 1)
 
     def test_delete_document_removes_upload_job_artifacts_and_job_directory(self):
         from services import document_service as svc

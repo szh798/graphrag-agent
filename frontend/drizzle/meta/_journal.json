@@ -15,6 +15,13 @@
       "when": 1783656083457,
       "tag": "0001_parched_the_watchers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784521264574,
+      "tag": "0002_flimsy_plazm",
+      "breakpoints": true
     }
   ]
 }

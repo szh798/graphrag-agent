@@ -9,6 +9,8 @@ from models.schemas import APIResponse
 from identity import RequestIdentity, get_request_identity
 from public_access import PUBLIC_DEMO_HEADER, document_is_visible, visible_document_ids
 from services import document_service as svc
+from services import indexing_service as idx_svc
+from operations import report_event
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
@@ -40,6 +42,44 @@ def _upload_error(code: int, message: str) -> JSONResponse:
         status_code=400,
         content=APIResponse.err(code, message).model_dump(),
     )
+
+
+def _start_automatic_dual_index(doc: dict) -> dict:
+    """Persist the upload first, then idempotently enqueue one dual-engine job."""
+
+    doc_id = str(doc["doc_id"])
+    try:
+        job = idx_svc.start_indexing(
+            doc_id,
+            idempotency_key=f"automatic-upload:{doc_id}",
+        )
+    except Exception as exc:
+        # The document remains recoverable and the UI exposes per-engine retry.
+        for engine in ("legacy", "lightrag"):
+            svc.update_engine_index_status(
+                doc_id,
+                engine,
+                "failed",
+                error="Automatic indexing could not be queued",
+            )
+        report_event(
+            "automatic_dual_index_enqueue_failed",
+            "A newly uploaded document could not be queued for dual indexing",
+            severity="error",
+            source="document_upload",
+            context={"doc_id": doc_id, "error": type(exc).__name__},
+        )
+        return svc.public_document(svc.get_document(doc_id) or doc)
+
+    current = svc.public_document(svc.get_document(doc_id) or doc)
+    if job:
+        current["job_id"] = job.get("job_id")
+        current["index_job"] = {
+            "job_id": job.get("job_id"),
+            "status": job.get("status"),
+            "engines": job.get("engines", {}),
+        }
+    return current
 
 
 async def _read_validated_upload(file: UploadFile) -> tuple[bytes | None, JSONResponse | None]:
@@ -104,7 +144,7 @@ async def upload_document(
         owner_id=identity.owner_id,
         actor_id=identity.actor_id if identity.authenticated else None,
     )
-    return APIResponse.ok(svc.public_document(doc))
+    return APIResponse.ok(_start_automatic_dual_index(doc))
 
 
 @router.post("/upload/complete", status_code=201)
@@ -134,7 +174,7 @@ async def complete_direct_upload(
         code_text, _, message = raw.partition(":")
         code = int(code_text) if code_text.isdigit() else 1001
         return _upload_error(code, message or "Invalid completed upload")
-    return APIResponse.ok(svc.public_document(doc))
+    return APIResponse.ok(_start_automatic_dual_index(doc))
 
 
 @router.get("/{doc_id}")
@@ -200,12 +240,18 @@ async def get_document_extractions(
 async def list_documents(
     page: int = 1,
     page_size: int = 20,
+    limit: int | None = None,
+    offset: int | None = None,
     status: str | None = None,
     format: str | None = None,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
     identity: RequestIdentity = Depends(get_request_identity),
 ):
-    page_size = min(page_size, 100)
+    if limit is not None:
+        page_size = min(max(limit, 1), 100)
+        page = max(1, ((offset or 0) // page_size) + 1)
+    else:
+        page_size = min(page_size, 100)
     allowed_ids = visible_document_ids(public_demo, identity.owner_id)
     result = svc.list_documents(page, page_size, status, format, allowed_ids=allowed_ids)
     return APIResponse.ok(result)
