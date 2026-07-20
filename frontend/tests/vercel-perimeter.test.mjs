@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   RATE_LIMIT_POLICIES,
+  bearerToken,
   jsonError,
   rateLimitDimensions,
   responseHeaders,
@@ -50,6 +51,27 @@ test('only authenticated internal callbacks bypass the public API allowlist', ()
   )
   assert.equal(
     trustedInternalRoute('GET', '/api/v1/documents/upload/complete', new Headers(), true),
+    false,
+  )
+})
+
+test('scheduler bearer tokens are parsed without widening internal routes', () => {
+  const schedulerHeaders = new Headers({ Authorization: 'Bearer scheduler-secret' })
+
+  assert.equal(bearerToken(schedulerHeaders), 'scheduler-secret')
+  assert.equal(bearerToken(new Headers({ Authorization: 'Basic scheduler-secret' })), '')
+  assert.equal(bearerToken(new Headers()), '')
+
+  assert.equal(
+    trustedInternalRoute('POST', '/api/index-dispatch', schedulerHeaders, true),
+    true,
+  )
+  assert.equal(
+    trustedInternalRoute('GET', '/api/index-dispatch', schedulerHeaders, true),
+    false,
+  )
+  assert.equal(
+    trustedInternalRoute('POST', '/api/v1/index/run-next', schedulerHeaders, true),
     false,
   )
 })

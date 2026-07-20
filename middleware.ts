@@ -12,6 +12,7 @@ import {
   BATCH_POLL_LEASE_MS,
   INDEX_RECOVERY_LEASE_MS,
   RATE_LIMIT_POLICIES,
+  bearerToken,
   jsonError,
   rateLimitDimensions,
   responseHeaders,
@@ -54,8 +55,7 @@ function attachResponseHeaders(response: Response, headers: Headers): Response {
   return response
 }
 
-async function secretMatches(request: Request, expected: string): Promise<boolean> {
-  const supplied = request.headers.get('x-graphrag-proxy-secret')?.trim() ?? ''
+async function secretValuesMatch(supplied: string, expected: string): Promise<boolean> {
   if (!expected || !supplied || supplied.length !== expected.length) return false
   const encoder = new TextEncoder()
   const [left, right] = await Promise.all([
@@ -67,6 +67,22 @@ async function secretMatches(request: Request, expected: string): Promise<boolea
   let difference = 0
   for (let index = 0; index < a.length; index += 1) difference |= a[index] ^ b[index]
   return difference === 0
+}
+
+async function internalRequestIsTrusted(
+  request: Request,
+  pathname: string,
+  proxySecret: string,
+): Promise<boolean> {
+  const suppliedProxy = request.headers.get('x-graphrag-proxy-secret')?.trim() ?? ''
+  if (await secretValuesMatch(suppliedProxy, proxySecret)) return true
+
+  if (request.method.toUpperCase() !== 'POST' || pathname !== '/api/index-dispatch') {
+    return false
+  }
+
+  const dispatchSecret = process.env.INDEX_DISPATCH_SECRET?.trim() ?? ''
+  return secretValuesMatch(bearerToken(request.headers), dispatchSecret)
 }
 
 async function enforcePaidRoute(
@@ -151,7 +167,7 @@ export default async function middleware(request: Request): Promise<Response> {
     return attachResponseHeaders(response, outgoingResponseHeaders)
   }
 
-  const isTrusted = await secretMatches(request, proxySecret)
+  const isTrusted = await internalRequestIsTrusted(request, url.pathname, proxySecret)
   const isInternal = trustedInternalRoute(
     request.method,
     url.pathname,

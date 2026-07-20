@@ -7,6 +7,13 @@ export const RATE_LIMIT_POLICIES = Object.freeze({
 export const BATCH_POLL_LEASE_MS = 1_500
 export const INDEX_RECOVERY_LEASE_MS = 30_000
 
+export function bearerToken(headers) {
+  const authorization = headers.get('authorization')?.trim() ?? ''
+  return authorization.toLowerCase().startsWith('bearer ')
+    ? authorization.slice(7).trim()
+    : ''
+}
+
 export function jsonError(status, msg, requestId, extraHeaders = {}) {
   const headers = new Headers(extraHeaders)
   headers.set('Cache-Control', 'no-store')
