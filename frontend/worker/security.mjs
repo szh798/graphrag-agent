@@ -249,7 +249,14 @@ async function hmacSha256(secret, value) {
 }
 
 export async function rateLimitIdentityHashes(request, visitorId, secret) {
-  const edgeIp = request.headers.get('cf-connecting-ip') ?? '0.0.0.0'
+  const forwardedIp =
+    request.headers.get('x-vercel-forwarded-for') ??
+    request.headers.get('x-forwarded-for') ??
+    ''
+  const edgeIp =
+    request.headers.get('cf-connecting-ip') ??
+    forwardedIp.split(',')[0]?.trim() ??
+    '0.0.0.0'
   const [visitor, ip, combined] = await Promise.all([
     hmacSha256(secret, `graphrag-rate/v1\nvisitor\n${visitorId}`),
     hmacSha256(secret, `graphrag-rate/v1\nip\n${edgeIp}`),
