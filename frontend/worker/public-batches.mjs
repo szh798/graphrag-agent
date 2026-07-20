@@ -11,6 +11,8 @@ const CREATE_PUBLIC_BATCHES = `
     completed INTEGER NOT NULL DEFAULT 0,
     failed INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'submitted',
+    engine TEXT NOT NULL DEFAULT 'legacy',
+    retrieval_mode TEXT,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -99,13 +101,46 @@ function statement(db, sql, bindings = []) {
 export function ensurePublicBatchSchema(db) {
   let ready = schemaPromises.get(db)
   if (!ready) {
-    ready = db
-      .batch([
+    ready = (async () => {
+      await db.batch([
         statement(db, CREATE_PUBLIC_BATCHES),
         statement(db, CREATE_PUBLIC_BATCH_ITEMS),
         ...PUBLIC_BATCH_INDEXES.map(sql => statement(db, sql)),
       ])
-      .then(() => undefined)
+
+      // Existing production D1 databases predate the permanent dual-engine
+      // contract. Add the nullable/defaulted columns in place and keep all old
+      // batches pinned to the classic engine.
+      const tableInfo = await statement(db, 'PRAGMA table_info(public_batches)').all()
+      const columns = new Set((tableInfo.results ?? []).map(column => column.name))
+      const addColumn = async (name, sql) => {
+        if (columns.has(name)) return
+        try {
+          await statement(db, sql).run()
+          columns.add(name)
+        } catch (error) {
+          // Another isolate may have completed the same additive migration
+          // between our PRAGMA and ALTER. Only suppress that proven-safe race.
+          const refreshed = await statement(
+            db,
+            'PRAGMA table_info(public_batches)',
+          ).all()
+          if ((refreshed.results ?? []).some(column => column.name === name)) {
+            columns.add(name)
+            return
+          }
+          throw error
+        }
+      }
+      await addColumn(
+        'engine',
+        "ALTER TABLE public_batches ADD COLUMN engine TEXT NOT NULL DEFAULT 'legacy'",
+      )
+      await addColumn(
+        'retrieval_mode',
+        'ALTER TABLE public_batches ADD COLUMN retrieval_mode TEXT',
+      )
+    })()
     schemaPromises.set(db, ready)
   }
   return ready
@@ -178,12 +213,15 @@ function numberValue(value) {
 }
 
 function batchSummary(row) {
+  const engine = row.engine === 'lightrag' ? 'lightrag' : 'legacy'
   return {
     batch_id: row.batch_id,
     total: numberValue(row.total),
     completed: numberValue(row.completed),
     failed: numberValue(row.failed),
     status: row.status,
+    engine,
+    retrieval_mode: engine === 'lightrag' ? row.retrieval_mode || 'mix' : null,
     created_at: isoTime(row.created_at),
     updated_at: isoTime(row.updated_at),
     cancel_requested: Boolean(row.cancel_requested),
@@ -209,7 +247,7 @@ async function loadOwnedBatch(db, batchId, visitorId) {
   return statement(
     db,
     `SELECT batch_id, visitor_id, total, completed, failed, status,
-            cancel_requested, created_at, updated_at, expires_at
+            engine, retrieval_mode, cancel_requested, created_at, updated_at, expires_at
      FROM public_batches
      WHERE batch_id = ? AND visitor_id = ?`,
     [batchId, visitorId],
@@ -351,6 +389,20 @@ async function createBatch(request, db, visitorId, nowMs) {
     return apiError(400, 1001, 'Batch requires 1 to 20 questions')
   }
 
+  const engine = body?.engine ?? 'legacy'
+  if (engine !== 'legacy' && engine !== 'lightrag') {
+    return apiError(400, 1001, "engine must be 'legacy' or 'lightrag'")
+  }
+  const retrievalMode = engine === 'lightrag'
+    ? body?.retrieval_mode ?? 'mix'
+    : null
+  if (
+    engine === 'lightrag'
+    && !['local', 'global', 'hybrid', 'mix', 'naive'].includes(retrievalMode)
+  ) {
+    return apiError(400, 1001, 'Invalid LightRAG retrieval_mode')
+  }
+
   const batchId = `batch_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`
   const expiresAt = nowMs + BATCH_TTL_MS
   const writes = [
@@ -358,9 +410,9 @@ async function createBatch(request, db, visitorId, nowMs) {
       db,
       `INSERT INTO public_batches (
          batch_id, visitor_id, total, completed, failed, status,
-         cancel_requested, created_at, updated_at, expires_at
-       ) VALUES (?, ?, ?, 0, 0, 'submitted', 0, ?, ?, ?)`,
-      [batchId, visitorId, questions.length, nowMs, nowMs, expiresAt],
+         engine, retrieval_mode, cancel_requested, created_at, updated_at, expires_at
+       ) VALUES (?, ?, ?, 0, 0, 'submitted', ?, ?, 0, ?, ?, ?)`,
+      [batchId, visitorId, questions.length, engine, retrievalMode, nowMs, nowMs, expiresAt],
     ),
     ...questions.map((question, position) =>
       statement(
@@ -389,6 +441,8 @@ async function createBatch(request, db, visitorId, nowMs) {
       batch_id: batchId,
       total: questions.length,
       status: 'submitted',
+      engine,
+      retrieval_mode: retrievalMode,
       created_at: isoTime(nowMs),
     },
     202,
@@ -417,7 +471,7 @@ async function listBatches(request, db, visitorId) {
   const rows = await statement(
     db,
     `SELECT batch_id, total, completed, failed, status, cancel_requested,
-            created_at, updated_at
+            engine, retrieval_mode, created_at, updated_at
      FROM public_batches
      WHERE visitor_id = ?
      ORDER BY updated_at DESC, batch_id DESC
@@ -495,6 +549,7 @@ async function finishClaim(
 
 async function callBackendQuery(
   claimed,
+  batch,
   backendOrigin,
   proxySecret,
   visitorId,
@@ -514,7 +569,14 @@ async function callBackendQuery(
         'X-GraphRAG-Public-Demo': '1',
         'X-Request-ID': requestId,
       },
-      body: JSON.stringify({ question: claimed.question, history: [] }),
+      body: JSON.stringify({
+        question: claimed.question,
+        history: [],
+        engine: batch.engine === 'lightrag' ? 'lightrag' : 'legacy',
+        retrieval_mode: batch.engine === 'lightrag'
+          ? batch.retrieval_mode || 'mix'
+          : undefined,
+      }),
     }),
   )
 
@@ -573,6 +635,7 @@ async function getBatchDetail(
   try {
     const result = await callBackendQuery(
       claimed,
+      batch,
       backendOrigin,
       proxySecret,
       visitorId,

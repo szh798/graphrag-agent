@@ -172,8 +172,30 @@ export async function POST(request: Request): Promise<Response> {
           },
         )
         if (!response.ok) throw new Error('Could not register completed upload')
-        const payload = await response.json() as { code?: number }
+        const payload = await response.json() as { code?: number; data?: { job_id?: string } }
         if (payload.code !== 0) throw new Error('Could not register completed upload')
+
+        // The production Railway worker polls continuously. Existing Vercel
+        // deployments still need their trusted dispatcher woken after the
+        // upload callback auto-enqueues the new dual-engine parent job.
+        if ((process.env.INDEX_WORKER_MODE ?? 'vercel').toLowerCase() !== 'railway') {
+          const dispatch = await fetch(`${callbackOrigin(request)}/api/index-dispatch`, {
+            method: 'POST',
+            headers: {
+              'X-GraphRAG-Proxy-Secret': process.env.BACKEND_PROXY_SECRET ?? '',
+              'X-Request-ID': crypto.randomUUID(),
+            },
+          })
+          if (!dispatch.ok) {
+            console.error(JSON.stringify({
+              level: 'error',
+              event: 'automatic_index_dispatch_failed',
+              source: 'blob_upload_callback',
+              status: dispatch.status,
+              job_id: payload.data?.job_id ?? null,
+            }))
+          }
+        }
       },
     })
 

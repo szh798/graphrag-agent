@@ -5,7 +5,7 @@ import { ZoomIn, ZoomOut, Maximize2, Search, Download, Image, X, MessageSquare, 
 import { toast } from 'sonner';
 import { useAppState, type KGNode } from '../../store';
 import { TYPE_COLORS } from '../../mock-data';
-import { api } from '../../api';
+import { api, type Engine } from '../../api';
 
 const ENTITY_TYPES = ['TECHNOLOGY', 'CONCEPT', 'PERSON', 'ORGANIZATION', 'LOCATION'] as const;
 const CONFIDENCE_LEVELS = ['match_exact', 'match_greater', 'match_lesser', 'match_fuzzy'] as const;
@@ -47,9 +47,19 @@ function freezeSimulation(simulation: d3.Simulation<any, any>) {
 }
 
 export function KGExplorer() {
-  const { nodes, edges, documents, selectedNode, setSelectedNode, getNeighbors } = useAppState();
+  const {
+    nodes,
+    edges,
+    documents,
+    selectedNode,
+    setSelectedNode,
+    getNeighbors,
+    graphEngine,
+    setGraphEngine,
+    refreshKG,
+  } = useAppState();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<d3.Simulation<any, any> | null>(null);
@@ -65,20 +75,33 @@ export function KGExplorer() {
   const [tooltip, setTooltip] = useState<{ x: number; y: number; node: KGNode } | null>(null);
   const [showAllNeighbors, setShowAllNeighbors] = useState(false);
   const [layoutRunning, setLayoutRunning] = useState(false);
+  const [minimumWeight, setMinimumWeight] = useState(0);
+  const [pageFilter, setPageFilter] = useState('');
 
-  const indexedDocs = documents.filter(d => d.status === 'indexed');
+  const indexedDocs = documents.filter(d => (
+    d.available_engines?.includes(graphEngine)
+    ?? (graphEngine === 'legacy' && d.status === 'indexed')
+  ));
 
   // Filtered nodes/edges
   const visibleNodes = nodes.filter(n => {
     if (!filterTypes.has(n.type)) return false;
-    if (!filterConfidence.has(n.confidence)) return false;
+    if (graphEngine === 'legacy' && !filterConfidence.has(n.confidence)) return false;
     if (filterDoc !== 'all' && n.doc_id !== filterDoc) return false;
+    if (graphEngine === 'lightrag' && pageFilter) {
+      const requestedPage = Number(pageFilter);
+      if (!n.pages?.includes(requestedPage) && n.page !== requestedPage) return false;
+    }
     if (searchQuery && !n.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     return true;
   });
 
   const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
-  const visibleEdges = edges.filter(e => visibleNodeIds.has(e.source as string) && visibleNodeIds.has(e.target as string));
+  const visibleEdges = edges.filter(e =>
+    visibleNodeIds.has(e.source as string)
+    && visibleNodeIds.has(e.target as string)
+    && (graphEngine !== 'lightrag' || e.weight >= minimumWeight)
+  );
 
   // Neighbors of selected
   const neighborInfo = selectedNode ? getNeighbors(selectedNode.id) : null;
@@ -89,6 +112,20 @@ export function KGExplorer() {
   const visibleEdgeKey = visibleEdges.map(e => e.id).join('|');
   const nodeParam = searchParams.get('node');
   const docParam = searchParams.get('doc_id');
+  const engineParam = searchParams.get('engine');
+
+  useEffect(() => {
+    const requestedEngine: Engine = engineParam === 'lightrag' ? 'lightrag' : 'legacy';
+    if (engineParam !== 'legacy' && engineParam !== 'lightrag') {
+      const next = new URLSearchParams(searchParams);
+      next.set('engine', requestedEngine);
+      setSearchParams(next, { replace: true });
+    }
+    if (requestedEngine !== graphEngine) {
+      setGraphEngine(requestedEngine);
+      void refreshKG(requestedEngine);
+    }
+  }, [engineParam, graphEngine, refreshKG, searchParams, setGraphEngine, setSearchParams]);
 
   useEffect(() => {
     setShowAllNeighbors(false);
@@ -470,6 +507,22 @@ export function KGExplorer() {
     setFilterConfidence(next);
   };
 
+  const selectedDocumentId = filterDoc !== 'all' ? filterDoc : docParam;
+  const selectedDocument = selectedDocumentId ? documents.find(doc => doc.id === selectedDocumentId) : undefined;
+  const documentSupportsEngine = (engine: Engine) => {
+    if (!selectedDocument) return true;
+    if (selectedDocument.available_engines) return selectedDocument.available_engines.includes(engine);
+    return engine === 'legacy' && selectedDocument.status === 'indexed';
+  };
+
+  const handleEngineChange = (engine: Engine) => {
+    if (!documentSupportsEngine(engine)) return;
+    const next = new URLSearchParams(searchParams);
+    next.set('engine', engine);
+    next.delete('node');
+    setSearchParams(next, { replace: true });
+  };
+
   const exportName = () => {
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     return `graphrag-kg-${stamp}`;
@@ -495,23 +548,32 @@ export function KGExplorer() {
     try {
       // The interactive canvas uses a sparse layout view for performance, but
       // JSON export must retain the complete persisted knowledge graph.
-      const exported = await api.exportKG(filterDoc === 'all' ? undefined : filterDoc);
+      const exported = await api.exportKG(filterDoc === 'all' ? undefined : filterDoc, graphEngine);
       const exportedNodes = exported.nodes.filter(node => {
         if (!filterTypes.has(node.type)) return false;
-        if (!filterConfidence.has(node.confidence)) return false;
+        if (graphEngine === 'legacy' && !filterConfidence.has(node.confidence)) return false;
+        if (graphEngine === 'lightrag' && pageFilter) {
+          const page = Number(pageFilter);
+          if (!node.pages?.includes(page) && node.page !== page) return false;
+        }
         return !searchQuery || node.name.toLowerCase().includes(searchQuery.toLowerCase());
       });
       const exportedNodeIds = new Set(exportedNodes.map(node => node.id));
       const exportedEdges = exported.edges.filter(edge =>
-        exportedNodeIds.has(edge.source) && exportedNodeIds.has(edge.target)
+        exportedNodeIds.has(edge.source)
+        && exportedNodeIds.has(edge.target)
+        && (graphEngine !== 'lightrag' || (edge.weight ?? 1) >= minimumWeight)
       );
       const payload = {
         format: 'GraphRAG Studio KG export',
         exported_at: new Date().toISOString(),
         filters: {
           doc_id: filterDoc,
+          engine: graphEngine,
           entity_types: Array.from(filterTypes),
-          confidence: Array.from(filterConfidence),
+          confidence: graphEngine === 'legacy' ? Array.from(filterConfidence) : undefined,
+          minimum_weight: graphEngine === 'lightrag' ? minimumWeight : undefined,
+          page: graphEngine === 'lightrag' && pageFilter ? Number(pageFilter) : undefined,
           search: searchQuery,
         },
         stats: {
@@ -614,6 +676,18 @@ export function KGExplorer() {
             flexShrink: 0,
           }}
         >
+          <h3 className="mb-2" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>图谱引擎</h3>
+          <select
+            aria-label="选择图谱引擎"
+            value={graphEngine}
+            onChange={event => handleEngineChange(event.target.value as Engine)}
+            className="mb-4 px-2 py-1.5 rounded-md w-full"
+            style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 12 }}
+          >
+            <option value="legacy" disabled={!documentSupportsEngine('legacy')}>经典引擎</option>
+            <option value="lightrag" disabled={!documentSupportsEngine('lightrag')}>LightRAG</option>
+          </select>
+
           <h3 className="mb-3" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>来源文档</h3>
           <select
             value={filterDoc}
@@ -648,15 +722,46 @@ export function KGExplorer() {
             })}
           </div>
 
-          <h3 className="mb-2" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>置信度</h3>
-          <div className="flex flex-col gap-1.5 mb-4">
-            {CONFIDENCE_LEVELS.map(c => (
-              <label key={c} className="flex items-center gap-2 cursor-pointer" style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                <input type="checkbox" checked={filterConfidence.has(c)} onChange={() => toggleConfidence(c)} className="cursor-pointer" />
-                {c.replace('match_', '')}
-              </label>
-            ))}
-          </div>
+          {graphEngine === 'legacy' ? (
+            <>
+              <h3 className="mb-2" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>置信度</h3>
+              <div className="flex flex-col gap-1.5 mb-4">
+                {CONFIDENCE_LEVELS.map(c => (
+                  <label key={c} className="flex items-center gap-2 cursor-pointer" style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                    <input type="checkbox" checked={filterConfidence.has(c)} onChange={() => toggleConfidence(c)} className="cursor-pointer" />
+                    {c.replace('match_', '')}
+                  </label>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <h3 className="mb-2" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>关系权重</h3>
+              <select
+                aria-label="最小关系权重"
+                value={minimumWeight}
+                onChange={event => setMinimumWeight(Number(event.target.value))}
+                className="mb-4 px-2 py-1.5 rounded-md w-full"
+                style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 12 }}
+              >
+                <option value={0}>全部关系</option>
+                <option value={0.25}>≥ 0.25</option>
+                <option value={0.5}>≥ 0.50</option>
+                <option value={0.75}>≥ 0.75</option>
+              </select>
+              <h3 className="mb-2" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-3)' }}>页码</h3>
+              <input
+                aria-label="按页码筛选"
+                type="number"
+                min={1}
+                value={pageFilter}
+                onChange={event => setPageFilter(event.target.value)}
+                placeholder="全部页码"
+                className="mb-4 px-2 py-1.5 rounded-md w-full"
+                style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 12 }}
+              />
+            </>
+          )}
 
           <div className="mt-auto flex flex-col gap-2">
             <button
@@ -722,7 +827,7 @@ export function KGExplorer() {
 
         {/* Stats */}
         <div className="absolute top-3 right-3 rounded-md px-3 py-1.5" style={{ background: 'var(--bg-s1)', border: '1px solid var(--border-main)', zIndex: 10, fontSize: 11, color: 'var(--text-3)' }}>
-          {visibleNodes.length} 个节点 &middot; {visibleEdges.length} 条布局边
+          {graphEngine === 'lightrag' ? 'LightRAG' : '经典引擎'} &middot; {visibleNodes.length} 个节点 &middot; {visibleEdges.length} 条布局边
         </div>
 
         {visibleNodes.length === 0 ? (
@@ -757,8 +862,8 @@ export function KGExplorer() {
                 {tooltip.node.type}
               </span>
             </div>
-            <div style={{ color: 'var(--text-3)' }}>页码: {tooltip.node.page}</div>
-            <div style={{ color: 'var(--text-3)' }}>置信度: {tooltip.node.confidence}</div>
+            <div style={{ color: 'var(--text-3)' }}>页码: {tooltip.node.pages?.join('、') || tooltip.node.page || '—'}</div>
+            {graphEngine === 'legacy' && <div style={{ color: 'var(--text-3)' }}>置信度: {tooltip.node.confidence}</div>}
             <div style={{ color: 'var(--text-3)' }}>度数: {tooltip.node.degree}</div>
           </div>
         )}
@@ -794,8 +899,8 @@ export function KGExplorer() {
 
           <div className="flex flex-col gap-2 mb-4">
             {[
-              { label: '页码', value: selectedNode.page },
-              { label: '置信度', value: selectedNode.confidence.replace('match_', '') },
+              { label: '页码', value: selectedNode.pages?.join('、') || selectedNode.page || '—' },
+              ...(graphEngine === 'legacy' ? [{ label: '置信度', value: selectedNode.confidence.replace('match_', '') }] : []),
               { label: '度数', value: selectedNode.degree },
               { label: '中心性', value: selectedNode.centrality.toFixed(2) },
             ].map(p => (
@@ -813,7 +918,7 @@ export function KGExplorer() {
             {shownNeighbors.map(n => (
               <button
                 key={n.id}
-                onClick={() => navigate(`/graph?node=${n.id}`)}
+                onClick={() => navigate(`/graph?node=${encodeURIComponent(n.id)}&engine=${graphEngine}`)}
                 className="flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-left"
                 style={{ background: 'var(--bg-s2)', border: 'none', fontSize: 12, color: 'var(--text-2)' }}
               >
@@ -834,7 +939,7 @@ export function KGExplorer() {
           </div>
 
           <button
-            onClick={() => navigate(`/chat?q=${encodeURIComponent(`Tell me about ${selectedNode.name}`)}`)}
+            onClick={() => navigate(`/chat?q=${encodeURIComponent(`Tell me about ${selectedNode.name}`)}&engine=${graphEngine}`)}
             className="flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer w-full justify-center"
             style={{ background: 'rgba(88,166,255,0.1)', border: '1px solid var(--blue)', color: 'var(--blue)', fontSize: 13 }}
           >

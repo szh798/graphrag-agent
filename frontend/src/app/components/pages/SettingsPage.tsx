@@ -29,6 +29,12 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
   );
 }
 
+function formatTimestamp(value?: string) {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+}
+
 function SettingsCard({
   icon,
   title,
@@ -82,6 +88,12 @@ export function SettingsPage() {
   const appDb = health?.components.app_database;
   const blobStorage = health?.components.blob_storage;
   const taskQueue = health?.components.task_queue;
+  const lightrag = health?.components.lightrag;
+  const lightragWorker = health?.components.lightrag_worker;
+  const lightragGraph = health?.components.lightrag_graph_database;
+  const lightragVector = health?.components.lightrag_vector_database;
+  const lightragReranker = health?.components.lightrag_reranker;
+  const lightragBackfill = health?.components.lightrag_backfill;
   const productionReady = health?.production_ready === true;
 
   return (
@@ -161,6 +173,53 @@ export function SettingsPage() {
         <SettingsCard icon={<Database size={17} />} title="索引队列" component={taskQueue}>
           <Field label="后端" value={taskQueue?.backend} />
           <Field label="持久队列" value={taskQueue?.durable ? '是' : '否'} />
+        </SettingsCard>
+
+        <SettingsCard icon={<Cpu size={17} />} title="LightRAG 引擎" component={lightrag}>
+          <Field label="启用状态" value={lightrag?.enabled === false || lightrag?.configured === false ? '已关闭' : lightrag ? '已启用' : '未配置'} />
+          <Field label="版本" value={lightrag?.version} />
+          <Field label="Readiness" value={lightrag?.ready === true ? '就绪' : lightrag?.detail ?? '未就绪'} />
+        </SettingsCard>
+
+        <SettingsCard icon={<Cpu size={17} />} title="LightRAG Worker" component={lightragWorker}>
+          <Field label="Worker 状态" value={lightragWorker?.worker_status ?? lightragWorker?.mode ?? lightragWorker?.status} />
+          <Field label="Worker 版本" value={lightragWorker?.version} />
+          <Field label="Worker 标识" value={lightragWorker?.worker_id} />
+          <Field label="最近心跳" value={formatTimestamp(lightragWorker?.last_seen)} />
+          <Field
+            label="心跳延迟"
+            value={lightragWorker?.heartbeat_age_seconds === undefined ? undefined : `${lightragWorker.heartbeat_age_seconds}s / ${lightragWorker.heartbeat_ttl_seconds ?? '—'}s`}
+          />
+          <Field label="队列深度" value={lightragWorker?.queue_depth} />
+          <Field label="详情" value={lightragWorker?.detail} />
+        </SettingsCard>
+
+        <SettingsCard icon={<Database size={17} />} title="LightRAG 图数据库" component={lightragGraph}>
+          <Field label="后端" value={lightragGraph?.backend ?? 'Neo4j'} />
+          <Field label="持久化" value={lightragGraph?.persistence ?? (lightragGraph?.persistent ? '持久' : undefined)} />
+        </SettingsCard>
+
+        <SettingsCard icon={<Database size={17} />} title="LightRAG 检索数据库" component={lightragVector}>
+          <Field label="后端" value={lightragVector?.backend ?? lightragVector?.database} />
+          <Field label="向量维度" value={lightragVector?.vector_dimensions} />
+          <Field label="持久化" value={lightragVector?.persistence ?? (lightragVector?.persistent ? '持久' : undefined)} />
+        </SettingsCard>
+
+        <SettingsCard icon={<Cpu size={17} />} title="LightRAG Reranker" component={lightragReranker}>
+          <Field label="模型" value={lightragReranker?.model ?? lightragReranker?.reranker} />
+          <Field label="服务状态" value={lightragReranker?.status === 'ok' ? '可用' : '不可用'} />
+        </SettingsCard>
+
+        <SettingsCard icon={<FileText size={17} />} title="LightRAG Backfill" component={lightragBackfill}>
+          <Field label="自动回填" value={lightragBackfill?.enabled ? '已启用' : '已关闭'} />
+          <Field label="运行模式" value={lightragBackfill?.mode} />
+          <Field label="维护状态" value={lightragBackfill?.maintenance_status} />
+          <Field label="最近更新" value={formatTimestamp(lightragBackfill?.last_updated)} />
+          <Field label="总文档" value={lightragBackfill?.total} />
+          <Field label="待补建文档" value={lightragBackfill?.pending ?? lightragBackfill?.pending_documents} />
+          <Field label="已完成文档" value={lightragBackfill?.done ?? lightragBackfill?.completed_documents} />
+          <Field label="失败" value={lightragBackfill?.failed} />
+          <Field label="详情" value={lightragBackfill?.detail} />
         </SettingsCard>
       </div>
     </div>

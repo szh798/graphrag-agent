@@ -9,6 +9,10 @@
 - Vercel Blob: uploaded files, MinerU artifacts, export files.
 - Upstash Redis: indexing queue, locks, rate limits, short-lived cache.
 
+LightRAG 双引擎使用**另一套** Neo4j Aura 图谱和独立 Neon 检索库；经典图谱、
+业务数据库和 LightRAG 数据不得共库。API/Worker 资源、变量及回滚步骤见
+[LightRAG 双引擎部署与运维手册](lightrag-dual-engine-operations.md)。
+
 ## Backend Environment
 
 ```bash

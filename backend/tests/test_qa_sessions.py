@@ -7,6 +7,22 @@ from unittest.mock import patch
 
 
 class QASessionTests(unittest.TestCase):
+    def test_session_history_preserves_existing_unbounded_service_contract(self):
+        from services import qa_service as svc
+
+        session = {
+            "messages": [
+                {"role": "human" if index % 2 == 0 else "ai", "content": str(index)}
+                for index in range(12)
+            ]
+        }
+
+        history = svc._session_history(session)
+
+        self.assertEqual(len(history), 12)
+        self.assertEqual(history[0]["content"], "0")
+        self.assertEqual(history[-1]["content"], "11")
+
     def test_run_query_persists_session_and_uses_it_for_next_turn(self):
         from services import qa_service as svc
 

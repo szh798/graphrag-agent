@@ -1,0 +1,50 @@
+{"id":"q001","question":"北辰项目由谁负责？","document_ids":["fixture_doc_01"],"expected_reference_pages":[1],"expected_facts":["林澈"],"category":"local_fact","tags":["markdown","person"]}
+{"id":"q002","question":"北辰项目何时启动？","document_ids":["fixture_doc_01"],"expected_reference_pages":[1],"expected_facts":["2025 年 3 月"],"category":"local_fact","tags":["date"]}
+{"id":"q003","question":"北辰项目默认向量维度是多少？","document_ids":["fixture_doc_01"],"expected_reference_pages":[1],"expected_facts":["1024"],"category":"local_fact","tags":["technology"]}
+{"id":"q004","question":"北辰项目风险复盘安排在星期几？","document_ids":["fixture_doc_01"],"expected_reference_pages":[1],"expected_facts":["每周二"],"category":"local_fact","tags":["schedule"]}
+{"id":"q005","question":"北辰项目对引用页码准确率的目标和验收代号是什么？","document_ids":["fixture_doc_01"],"expected_reference_pages":[1],"expected_facts":["95%","BC-95"],"category":"multi_fact","tags":["quality"]}
+{"id":"q006","question":"云杉平台的严重故障响应目标是多少？","document_ids":["fixture_doc_02"],"expected_reference_pages":[1],"expected_facts":["15 分钟"],"category":"local_fact","tags":["operations"]}
+{"id":"q007","question":"云杉平台的严重故障恢复目标是多少？","document_ids":["fixture_doc_02"],"expected_reference_pages":[1],"expected_facts":["2 小时"],"category":"local_fact","tags":["operations"]}
+{"id":"q008","question":"云杉生产告警发送到哪里？","document_ids":["fixture_doc_02"],"expected_reference_pages":[1],"expected_facts":["飞书群","云杉值班台"],"category":"multi_fact","tags":["alert"]}
+{"id":"q009","question":"云杉固定发布窗口是什么时间？","document_ids":["fixture_doc_02"],"expected_reference_pages":[1],"expected_facts":["每周四 20:00"],"category":"local_fact","tags":["release"]}
+{"id":"q010","question":"云杉发布前必须完成哪两项工作？","document_ids":["fixture_doc_02"],"expected_reference_pages":[1],"expected_facts":["数据库备份","回滚演练"],"category":"multi_fact","tags":["release"]}
+{"id":"q011","question":"海棠课程持续多少周？","document_ids":["fixture_doc_03"],"expected_reference_pages":[1],"expected_facts":["12 周"],"category":"local_fact","tags":["education"]}
+{"id":"q012","question":"海棠课程的主讲教师是谁？","document_ids":["fixture_doc_03"],"expected_reference_pages":[1],"expected_facts":["顾宁"],"category":"local_fact","tags":["person"]}
+{"id":"q013","question":"海棠课程结课项目占总成绩多少？","document_ids":["fixture_doc_03"],"expected_reference_pages":[1],"expected_facts":["40%"],"category":"local_fact","tags":["education"]}
+{"id":"q014","question":"海棠课程是否要求购买商业软件？","document_ids":["fixture_doc_03"],"expected_reference_pages":[1],"expected_facts":["不要求"],"category":"local_fact","tags":["policy"]}
+{"id":"q015","question":"海棠结课项目必须包含哪些内容？","document_ids":["fixture_doc_03"],"expected_reference_pages":[1],"expected_facts":["数据字典","可复现实验","伦理风险说明"],"category":"multi_fact","tags":["requirements"]}
+{"id":"q016","question":"岩虎一号部署在哪里？","document_ids":["fixture_doc_04"],"expected_reference_pages":[1],"expected_facts":["南港仓库 A3 区"],"category":"local_fact","tags":["location"]}
+{"id":"q017","question":"岩虎一号的设备编号是什么？","document_ids":["fixture_doc_04"],"expected_reference_pages":[1],"expected_facts":["YH-001"],"category":"local_fact","tags":["identifier"]}
+{"id":"q018","question":"岩虎机器人的正常巡检周期是多少？","document_ids":["fixture_doc_04"],"expected_reference_pages":[1],"expected_facts":["14 天"],"category":"local_fact","tags":["maintenance"]}
+{"id":"q019","question":"岩虎一号曾因什么原因发生定位漂移？","document_ids":["fixture_doc_04"],"expected_reference_pages":[1],"expected_facts":["左侧激光雷达积尘"],"category":"causal","tags":["maintenance"]}
+{"id":"q020","question":"更换岩虎电池后需要做什么？","document_ids":["fixture_doc_04"],"expected_reference_pages":[1],"expected_facts":["20 分钟静态校准","校准编号"],"category":"procedure","tags":["maintenance"]}
+{"id":"q021","question":"青岚项目的主供应商是谁？","document_ids":["fixture_doc_05"],"expected_reference_pages":[1],"expected_facts":["Qiming Manufacturing"],"category":"local_fact","tags":["organization","cross_language"]}
+{"id":"q022","question":"青岚合同编号是什么？","document_ids":["fixture_doc_05"],"expected_reference_pages":[1],"expected_facts":["QL-2026-017"],"category":"local_fact","tags":["identifier"]}
+{"id":"q023","question":"青岚首批交付多少台？","document_ids":["fixture_doc_05"],"expected_reference_pages":[1],"expected_facts":["320 units"],"category":"local_fact","tags":["quantity","cross_language"]}
+{"id":"q024","question":"青岚最晚交付日期是哪天？","document_ids":["fixture_doc_05"],"expected_reference_pages":[1],"expected_facts":["September 30, 2026"],"category":"local_fact","tags":["date","cross_language"]}
+{"id":"q025","question":"青岚不合格率超过阈值后供应商需要承担什么？","document_ids":["fixture_doc_05"],"expected_reference_pages":[1],"expected_facts":["5 business days","corrective-action report","reinspection costs"],"category":"conditional","tags":["contract","cross_language"]}
+{"id":"q026","question":"星桥研究计划由哪个机构负责？","document_ids":["fixture_doc_06"],"expected_reference_pages":[1],"expected_facts":["Chenghai University AI Center"],"category":"local_fact","tags":["organization","cross_language"]}
+{"id":"q027","question":"星桥使用什么嵌入模型？","document_ids":["fixture_doc_06"],"expected_reference_pages":[1],"expected_facts":["BAAI/bge-m3"],"category":"local_fact","tags":["technology"]}
+{"id":"q028","question":"星桥使用什么重排序模型？","document_ids":["fixture_doc_06"],"expected_reference_pages":[1],"expected_facts":["BAAI/bge-reranker-v2-m3"],"category":"local_fact","tags":["technology"]}
+{"id":"q029","question":"星桥研究样本覆盖哪些语言？","document_ids":["fixture_doc_06"],"expected_reference_pages":[1],"expected_facts":["Chinese","English","Spanish"],"category":"multi_fact","tags":["multilingual","cross_language"]}
+{"id":"q030","question":"星桥的新引擎盲测门槛是什么？","document_ids":["fixture_doc_06"],"expected_reference_pages":[1],"expected_facts":["50 questions","80 percent"],"category":"multi_fact","tags":["quality","cross_language"]}
+{"id":"q031","question":"枫叶诊所位于哪里？","document_ids":["fixture_doc_07"],"expected_reference_pages":[1],"expected_facts":["杭州文一路 88 号"],"category":"local_fact","tags":["location"]}
+{"id":"q032","question":"枫叶普通门诊可以提前多久预约？","document_ids":["fixture_doc_07"],"expected_reference_pages":[1],"expected_facts":["7 天"],"category":"local_fact","tags":["schedule"]}
+{"id":"q033","question":"取消枫叶预约至少要提前多久？","document_ids":["fixture_doc_07"],"expected_reference_pages":[1],"expected_facts":["4 小时"],"category":"local_fact","tags":["policy"]}
+{"id":"q034","question":"枫叶诊所周日是否营业？","document_ids":["fixture_doc_07"],"expected_reference_pages":[1],"expected_facts":["周日休息"],"category":"local_fact","tags":["schedule"]}
+{"id":"q035","question":"枫叶急诊如何就诊？","document_ids":["fixture_doc_07"],"expected_reference_pages":[1],"expected_facts":["不使用线上预约","一层急诊台"],"category":"procedure","tags":["policy"]}
+{"id":"q036","question":"曙光园区 2025 年总用电量是多少？","document_ids":["fixture_doc_08"],"expected_reference_pages":[1],"expected_facts":["860 万千瓦时"],"category":"local_fact","tags":["energy"]}
+{"id":"q037","question":"曙光用电量同比下降多少？","document_ids":["fixture_doc_08"],"expected_reference_pages":[1],"expected_facts":["12%"],"category":"local_fact","tags":["energy"]}
+{"id":"q038","question":"曙光最大的节能来源是什么？","document_ids":["fixture_doc_08"],"expected_reference_pages":[1],"expected_facts":["冷站变频改造","46%"],"category":"causal","tags":["energy"]}
+{"id":"q039","question":"曙光屋顶光伏容量是多少？","document_ids":["fixture_doc_08"],"expected_reference_pages":[1],"expected_facts":["1.8MW"],"category":"local_fact","tags":["energy"]}
+{"id":"q040","question":"曙光下一阶段照明改造的时间、预算和目标是什么？","document_ids":["fixture_doc_08"],"expected_reference_pages":[1],"expected_facts":["2026 年 11 月","180 万元","4%"],"category":"multi_fact","tags":["energy"]}
+{"id":"q041","question":"远山图书馆成人最多同时借几本书？","document_ids":["fixture_doc_09"],"expected_reference_pages":[1],"expected_facts":["8 本"],"category":"local_fact","tags":["policy"]}
+{"id":"q042","question":"远山图书馆成人借期与续借期分别多久？","document_ids":["fixture_doc_09"],"expected_reference_pages":[1],"expected_facts":["30 天","15 天"],"category":"multi_fact","tags":["policy"]}
+{"id":"q043","question":"远山图书馆逾期费用如何计算？","document_ids":["fixture_doc_09"],"expected_reference_pages":[1],"expected_facts":["每本每天 0.2 元"],"category":"local_fact","tags":["policy"]}
+{"id":"q044","question":"远山珍本阅览室资料能否外借？","document_ids":["fixture_doc_09"],"expected_reference_pages":[1],"expected_facts":["不得外借","二楼指定区域"],"category":"policy","tags":["policy"]}
+{"id":"q045","question":"遗失远山图书馆图书需要支付什么？","document_ids":["fixture_doc_09"],"expected_reference_pages":[1],"expected_facts":["原价","10 元加工费"],"category":"multi_fact","tags":["policy"]}
+{"id":"q046","question":"流萤系统有哪三级数据分类？","document_ids":["fixture_doc_10"],"expected_reference_pages":[1],"expected_facts":["公开","内部","机密"],"category":"multi_fact","tags":["security"]}
+{"id":"q047","question":"流萤机密数据的静态和传输加密要求是什么？","document_ids":["fixture_doc_10"],"expected_reference_pages":[1],"expected_facts":["AES-256","TLS 1.3"],"category":"multi_fact","tags":["security"]}
+{"id":"q048","question":"流萤访问审计日志至少保存多久？","document_ids":["fixture_doc_10"],"expected_reference_pages":[1],"expected_facts":["365 天"],"category":"local_fact","tags":["security"]}
+{"id":"q049","question":"流萤数据删除请求应在多久内完成？","document_ids":["fixture_doc_10"],"expected_reference_pages":[1],"expected_facts":["30 天"],"category":"local_fact","tags":["deletion"]}
+{"id":"q050","question":"结合北辰和流萤规范，服务不可用与租户隔离分别有什么硬性要求？","document_ids":["fixture_doc_01","fixture_doc_10"],"expected_reference_pages":[1],"expected_facts":["禁止静默切换","独立工作空间","HMAC-SHA256"],"category":"cross_document","tags":["multi_hop","security"]}

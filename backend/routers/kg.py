@@ -1,4 +1,6 @@
-"""C 组：知识图谱（6 个端点）"""
+"""C 组：双引擎知识图谱。"""
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 
@@ -10,11 +12,25 @@ from services import kg_service as svc
 router = APIRouter(prefix="/kg", tags=["Knowledge Graph"])
 
 
+def _engine_error(exc: Exception) -> JSONResponse:
+    unavailable = "LIGHTRAG" in str(exc).upper() or exc.__class__.__name__.startswith("LightRAG")
+    return JSONResponse(
+        status_code=503 if unavailable else 500,
+        content=APIResponse.err(
+            5003 if unavailable else 4001,
+            "LightRAG is unavailable. Switch to the classic engine explicitly." if unavailable else "Knowledge graph request failed.",
+        ).model_dump(),
+    )
+
+
 @router.get("/nodes")
 async def list_nodes(
     type: str | None = None,
     doc_id: str | None = None,
     confidence: str | None = None,
+    source_page: int | None = None,
+    layout: bool = False,
+    engine: Literal["legacy", "lightrag"] = "legacy",
     page: int = 1,
     page_size: int = 50,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
@@ -24,16 +40,21 @@ async def list_nodes(
     allowed_ids = visible_document_ids(public_demo, identity.owner_id)
     if doc_id and not document_is_visible(doc_id, allowed_ids):
         return APIResponse.ok({"total": 0, "page": page, "page_size": page_size, "items": []})
-    if allowed_ids is not None:
-        items = svc.export_kg(doc_id, allowed_ids).get("nodes", [])
-        if type:
-            items = [item for item in items if item.get("type") == type]
-        if confidence:
-            items = [item for item in items if item.get("confidence") == confidence]
-        total = len(items)
-        start = (page - 1) * page_size
-        return APIResponse.ok({"total": total, "page": page, "page_size": page_size, "items": items[start:start + page_size]})
-    result = svc.get_nodes(page, page_size, type, doc_id, confidence)
+    try:
+        result = await svc.get_nodes_for_engine(
+            engine,
+            tenant_id=identity.tenant_id,
+            page=page,
+            page_size=page_size,
+            node_type=type,
+            doc_id=doc_id,
+            confidence=confidence,
+            source_page=source_page,
+            allowed_doc_ids=allowed_ids,
+            layout=layout,
+        )
+    except Exception as exc:
+        return _engine_error(exc)
     if result["total"] == 0 and not any([type, doc_id, confidence]):
         return JSONResponse(
             status_code=400,
@@ -47,6 +68,9 @@ async def list_edges(
     doc_id: str | None = None,
     relation: str | None = None,
     layout: bool = False,
+    min_weight: float | None = None,
+    source_page: int | None = None,
+    engine: Literal["legacy", "lightrag"] = "legacy",
     page: int = 1,
     page_size: int = 100,
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
@@ -56,37 +80,39 @@ async def list_edges(
     allowed_ids = visible_document_ids(public_demo, identity.owner_id)
     if doc_id and not document_is_visible(doc_id, allowed_ids):
         return APIResponse.ok({"total": 0, "page": page, "page_size": page_size, "items": []})
-    if layout:
-        result = svc.get_layout_edges(doc_id, allowed_ids, relation)
-        items = result["items"]
-        total = len(items)
-        start = (page - 1) * page_size
-        return APIResponse.ok({
-            "total": total,
-            "raw_total": result["raw_total"],
-            "page": page,
-            "page_size": page_size,
-            "items": items[start:start + page_size],
-        })
-    if allowed_ids is not None:
-        items = svc.export_kg(doc_id, allowed_ids).get("edges", [])
-        if relation:
-            items = [item for item in items if item.get("relation") == relation]
-        total = len(items)
-        start = (page - 1) * page_size
-        return APIResponse.ok({"total": total, "page": page, "page_size": page_size, "items": items[start:start + page_size]})
-    result = svc.get_edges(page, page_size, doc_id, relation)
+    try:
+        result = await svc.get_edges_for_engine(
+            engine,
+            tenant_id=identity.tenant_id,
+            page=page,
+            page_size=page_size,
+            doc_id=doc_id,
+            relation=relation,
+            min_weight=min_weight,
+            source_page=source_page,
+            allowed_doc_ids=allowed_ids,
+            layout=layout,
+        )
+    except Exception as exc:
+        return _engine_error(exc)
     return APIResponse.ok(result)
 
 
 @router.get("/nodes/{node_id}")
 async def get_node_detail(
     node_id: str,
+    engine: Literal["legacy", "lightrag"] = "legacy",
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
     identity: RequestIdentity = Depends(get_request_identity),
 ):
-    node = svc.get_node_detail(node_id)
-    if not node or not document_is_visible(str(node.get("source_doc") or ""), visible_document_ids(public_demo, identity.owner_id)):
+    allowed_ids = visible_document_ids(public_demo, identity.owner_id)
+    try:
+        node = await svc.get_node_detail_for_engine(
+            engine, tenant_id=identity.tenant_id, node_id=node_id, allowed_doc_ids=allowed_ids,
+        )
+    except Exception as exc:
+        return _engine_error(exc)
+    if not node or not document_is_visible(str(node.get("source_doc") or ""), allowed_ids):
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(3001, f"Node '{node_id}' not found").model_dump(),
@@ -98,23 +124,29 @@ async def get_node_detail(
 async def get_node_neighbors(
     node_id: str,
     hops: int = 1,
+    engine: Literal["legacy", "lightrag"] = "legacy",
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
     identity: RequestIdentity = Depends(get_request_identity),
 ):
     allowed_ids = visible_document_ids(public_demo, identity.owner_id)
-    node = svc.get_node_detail(node_id)
-    if not node or not document_is_visible(str(node.get("source_doc") or ""), allowed_ids):
-        return JSONResponse(
-            status_code=404,
-            content=APIResponse.err(3001, f"Node '{node_id}' not found").model_dump(),
+    try:
+        result = await svc.get_neighbors_for_engine(
+            engine, tenant_id=identity.tenant_id, node_id=node_id, hops=hops, allowed_doc_ids=allowed_ids,
         )
-    result = svc.get_neighbors(node_id, hops)
+    except Exception as exc:
+        return _engine_error(exc)
     if result is None:
         return JSONResponse(
             status_code=404,
             content=APIResponse.err(3001, f"Node '{node_id}' not found").model_dump(),
         )
-    if allowed_ids is not None:
+    center = result.get("center") or {}
+    if not document_is_visible(str(center.get("source_doc") or ""), allowed_ids):
+        return JSONResponse(
+            status_code=404,
+            content=APIResponse.err(3001, f"Node '{node_id}' not found").model_dump(),
+        )
+    if engine == "legacy" and allowed_ids is not None:
         allowed_node_ids = {item.get("id") for item in svc.export_kg(allowed_doc_ids=allowed_ids).get("nodes", [])}
         result["neighbors_by_hop"] = {
             distance: [item for item in items if item.get("id") in allowed_node_ids]
@@ -126,10 +158,18 @@ async def get_node_neighbors(
 
 @router.get("/stats")
 async def get_kg_stats(
+    engine: Literal["legacy", "lightrag"] = "legacy",
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
     identity: RequestIdentity = Depends(get_request_identity),
 ):
-    stats = svc.get_stats(visible_document_ids(public_demo, identity.owner_id))
+    try:
+        stats = await svc.get_stats_for_engine(
+            engine,
+            tenant_id=identity.tenant_id,
+            allowed_doc_ids=visible_document_ids(public_demo, identity.owner_id),
+        )
+    except Exception as exc:
+        return _engine_error(exc)
     return APIResponse.ok(stats)
 
 
@@ -137,8 +177,21 @@ async def get_kg_stats(
 async def export_kg(
     format: str = "json",
     doc_id: str | None = None,
+    engine: Literal["legacy", "lightrag"] = "legacy",
     public_demo: str | None = Header(default=None, alias=PUBLIC_DEMO_HEADER),
     identity: RequestIdentity = Depends(get_request_identity),
 ):
-    result = svc.export_kg(doc_id, visible_document_ids(public_demo, identity.owner_id))
+    allowed_ids = visible_document_ids(public_demo, identity.owner_id)
+    if doc_id and not document_is_visible(doc_id, allowed_ids):
+        return APIResponse.ok({"format": format, "doc_id": doc_id, "engine": engine, "total_nodes": 0, "total_edges": 0, "nodes": [], "edges": []})
+    try:
+        result = await svc.export_kg_for_engine(
+            engine,
+            tenant_id=identity.tenant_id,
+            doc_id=doc_id,
+            allowed_doc_ids=allowed_ids,
+            complete=True,
+        )
+    except Exception as exc:
+        return _engine_error(exc)
     return APIResponse.ok(result)

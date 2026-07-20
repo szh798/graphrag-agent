@@ -3,8 +3,19 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { Send, Plus, ChevronRight, Clock, ExternalLink, Info, X, Download, RefreshCw, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAppState, type ChatMessage, type ChatSession, type ToolCall } from '../../store';
-import { api, ApiError, type ApiBatchResult, type ApiBatchSummary, type ApiToolCall } from '../../api';
+import {
+  api,
+  ApiError,
+  LIGHTRAG_MODES,
+  type ApiBatchResult,
+  type ApiBatchSummary,
+  type ApiChatSessionMessage,
+  type ApiToolCall,
+  type Engine,
+  type LightRAGMode,
+} from '../../api';
 import { TYPE_COLORS } from '../../mock-data';
+import { LatestRequestGate } from '../../latest-request';
 
 export function QAChat() {
   const { messages, setMessages, chatSessions, suggestedPrompts, nodes, refreshHistory, refreshSessions } = useAppState();
@@ -15,6 +26,9 @@ export function QAChat() {
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [engine, setEngine] = useState<Engine>('lightrag');
+  const [retrievalMode, setRetrievalMode] = useState<LightRAGMode>('mix');
+  const [lightragUnavailable, setLightragUnavailable] = useState(false);
   const [showBatchPanel, setShowBatchPanel] = useState(false);
   const [batchInput, setBatchInput] = useState('');
   const [batchRunning, setBatchRunning] = useState(false);
@@ -24,9 +38,47 @@ export function QAChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const batchPollRef = useRef<number | null>(null);
+  const latestRequestRef = useRef(new LatestRequestGate());
+  const activeSessionIdRef = useRef<string | null>(null);
+  const messagesCountRef = useRef(0);
+  const engineRef = useRef<Engine>('lightrag');
+  const retrievalModeRef = useRef<LightRAGMode>('mix');
+
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  useEffect(() => { messagesCountRef.current = messages.length; }, [messages.length]);
+  useEffect(() => { engineRef.current = engine; }, [engine]);
+  useEffect(() => { retrievalModeRef.current = retrievalMode; }, [retrievalMode]);
 
   useEffect(() => {
     const q = searchParams.get('q');
+    const requestedEngine = searchParams.get('engine');
+    const requestedMode = searchParams.get('retrieval_mode');
+    const nextEngine = requestedEngine === 'legacy' || requestedEngine === 'lightrag'
+      ? requestedEngine
+      : engineRef.current;
+    const nextMode = LIGHTRAG_MODES.some(mode => mode.value === requestedMode)
+      ? requestedMode as LightRAGMode
+      : retrievalModeRef.current;
+    const selectionChanged = nextEngine !== engineRef.current
+      || (nextEngine === 'lightrag' && nextMode !== retrievalModeRef.current);
+    if (selectionChanged) {
+      latestRequestRef.current.invalidate();
+      if (activeSessionIdRef.current !== null || messagesCountRef.current > 0) {
+        setMessages([]);
+        messagesCountRef.current = 0;
+        setActiveSessionId(null);
+        activeSessionIdRef.current = null;
+        setStreamStatus(null);
+        setStreamingMessageId(null);
+        setIsThinking(false);
+        toast.info('已为新的引擎设置开始新对话');
+      }
+      setEngine(nextEngine);
+      engineRef.current = nextEngine;
+      setRetrievalMode(nextMode);
+      retrievalModeRef.current = nextMode;
+      setLightragUnavailable(false);
+    }
     if (q) {
       setInput(q);
       inputRef.current?.focus();
@@ -55,23 +107,32 @@ export function QAChat() {
       .filter(Boolean) as { id: string; name: string; type: string }[];
   }
 
-  function mapSessionMessage(msg: {
-    id: string;
-    role: 'human' | 'ai';
-    content: string;
-    timestamp: string;
-    tool_calls?: Array<{ step?: number; tool_name: string; tool_input: string; tool_output: string }>;
-    cited_nodes?: string[];
-    duration_seconds?: number;
-  }): ChatMessage {
+  function resolveCitedEntities(
+    entities: Array<{ id: string; name: string; type: string } | string> | undefined,
+    fallbackIds: string[],
+  ) {
+    if (!entities?.length) return resolveCitedNodes(fallbackIds);
+    return entities.map(entity => {
+      if (typeof entity !== 'string') return entity;
+      const known = nodes.find(node => node.id === entity || node.name === entity);
+      return known
+        ? { id: known.id, name: known.name, type: known.type }
+        : { id: undefined, name: entity, type: 'CONCEPT' };
+    });
+  }
+
+  function mapSessionMessage(msg: ApiChatSessionMessage): ChatMessage {
     return {
       id: msg.id,
       role: msg.role,
       content: msg.content,
       timestamp: msg.timestamp,
       toolCalls: (msg.tool_calls ?? []).map(mapApiToolCall),
-      citedNodes: resolveCitedNodes(msg.cited_nodes ?? []),
+      citedNodes: resolveCitedEntities(msg.cited_entities, msg.cited_nodes ?? []),
       duration: msg.duration_seconds,
+      engine: msg.engine,
+      retrievalMode: msg.retrieval_mode,
+      references: msg.references,
     };
   }
 
@@ -87,8 +148,10 @@ export function QAChat() {
   const handleSend = async () => {
     if (!input.trim() || isThinking) return;
     const question = input.trim();
+    const requestSeq = latestRequestRef.current.begin();
     setInput('');
     setIsThinking(true);
+    setLightragUnavailable(false);
     setStreamStatus('正在分析问题...');
 
     const userMsg: ChatMessage = {
@@ -96,6 +159,8 @@ export function QAChat() {
       role: 'human',
       content: question,
       timestamp: new Date().toISOString(),
+      engine,
+      retrievalMode: engine === 'lightrag' ? retrievalMode : null,
     };
 
     const aiMessageId = `stream${Date.now() + 1}`;
@@ -105,12 +170,15 @@ export function QAChat() {
       content: '',
       timestamp: new Date().toISOString(),
       toolCalls: [],
+      engine,
+      retrievalMode: engine === 'lightrag' ? retrievalMode : null,
     };
     setStreamingMessageId(aiMessageId);
     setMessages(prev => [...prev, userMsg, pendingAiMsg]);
 
     try {
       await api.streamQuery(question, [], activeSessionId, evt => {
+        if (!latestRequestRef.current.isCurrent(requestSeq)) return;
         if (evt.event === 'status') {
           setStreamStatus(evt.data.message);
           return;
@@ -142,20 +210,28 @@ export function QAChat() {
                   content: result.answer || msg.content,
                   timestamp: result.timestamp ?? msg.timestamp,
                   toolCalls: result.tool_calls.map(mapApiToolCall),
-                  citedNodes: resolveCitedNodes(result.cited_nodes ?? []),
+                  citedNodes: resolveCitedEntities(result.cited_entities, result.cited_nodes ?? []),
                   duration: result.duration_seconds,
+                  engine: result.engine ?? engine,
+                  retrievalMode: result.retrieval_mode ?? (engine === 'lightrag' ? retrievalMode : null),
+                  references: result.references,
                 }
               : msg
           )));
-          if (result.session_id) setActiveSessionId(result.session_id);
+          if (result.session_id) {
+            setActiveSessionId(result.session_id);
+            activeSessionIdRef.current = result.session_id;
+          }
           setStreamStatus(null);
           refreshHistory();
           refreshSessions();
         }
-      });
+      }, { engine, retrievalMode });
     } catch (err) {
+      if (!latestRequestRef.current.isCurrent(requestSeq)) return;
       const msg = err instanceof ApiError ? err.message : '问答服务异常';
       toast.error(msg);
+      if (engine === 'lightrag') setLightragUnavailable(true);
       setMessages(prev => prev.map(item => item.id === aiMessageId ? {
         ...item,
         content: `⚠️ 请求失败：${msg}\n\n请确认：\n1. 在线问答服务可用\n2. 公开演示已有可查询的知识图谱\n3. LLM 服务已配置`,
@@ -163,9 +239,11 @@ export function QAChat() {
         toolCalls: undefined,
       } : item));
     } finally {
-      setIsThinking(false);
-      setStreamStatus(null);
-      setStreamingMessageId(null);
+      if (latestRequestRef.current.isCurrent(requestSeq)) {
+        setIsThinking(false);
+        setStreamStatus(null);
+        setStreamingMessageId(null);
+      }
     }
   };
 
@@ -177,11 +255,40 @@ export function QAChat() {
   };
 
   const handleNewChat = () => {
+    latestRequestRef.current.invalidate();
     setMessages([]);
+    messagesCountRef.current = 0;
     setInput('');
     setActiveSessionId(null);
+    activeSessionIdRef.current = null;
     setStreamStatus(null);
     setStreamingMessageId(null);
+    setIsThinking(false);
+    setEngine('lightrag');
+    engineRef.current = 'lightrag';
+    setRetrievalMode('mix');
+    retrievalModeRef.current = 'mix';
+    setLightragUnavailable(false);
+  };
+
+  const startWithSelection = (nextEngine: Engine, nextMode: LightRAGMode) => {
+    latestRequestRef.current.invalidate();
+    const changesExistingSession = activeSessionId !== null || messages.length > 0;
+    if (changesExistingSession) {
+      setMessages([]);
+      messagesCountRef.current = 0;
+      setActiveSessionId(null);
+      activeSessionIdRef.current = null;
+      setStreamStatus(null);
+      setStreamingMessageId(null);
+      setIsThinking(false);
+      toast.info('已为新的引擎设置开始新对话');
+    }
+    setEngine(nextEngine);
+    engineRef.current = nextEngine;
+    setRetrievalMode(nextMode);
+    retrievalModeRef.current = nextMode;
+    setLightragUnavailable(false);
   };
 
   const clearBatchPoll = () => {
@@ -211,7 +318,11 @@ export function QAChat() {
   }> => {
     try {
       const detail = await api.getBatchResult(batchId);
-      setBatchResult(detail);
+      setBatchResult(previous => ({
+        ...detail,
+        engine: detail.engine ?? previous?.engine,
+        retrieval_mode: detail.retrieval_mode ?? previous?.retrieval_mode,
+      }));
       if (detail.status === 'done' || detail.status === 'cancelled') {
         clearBatchPoll();
         setBatchRunning(false);
@@ -264,7 +375,7 @@ export function QAChat() {
     try {
       clearBatchPoll();
       setBatchRunning(true);
-      const started = await api.startBatch(questions);
+      const started = await api.startBatch(questions, engine, retrievalMode);
       setBatchResult({
         batch_id: started.batch_id,
         total: started.total,
@@ -273,6 +384,8 @@ export function QAChat() {
         status: started.status as ApiBatchResult['status'],
         created_at: started.created_at,
         results: [],
+        engine: started.engine ?? engine,
+        retrieval_mode: started.retrieval_mode ?? (engine === 'lightrag' ? retrievalMode : null),
       });
       const firstPoll = await pollBatch(started.batch_id);
       loadBatchHistory();
@@ -370,13 +483,28 @@ export function QAChat() {
   };
 
   const handleLoadSession = async (session: ChatSession) => {
+    const requestSeq = latestRequestRef.current.begin();
     try {
       setActiveSessionId(session.id);
+      activeSessionIdRef.current = session.id;
       setStreamStatus(null);
       setStreamingMessageId(null);
+      setIsThinking(false);
       const detail = await api.getQuerySession(session.id);
+      if (!latestRequestRef.current.isCurrent(requestSeq)) return;
+      const nextEngine = detail.engine ?? session.engine ?? 'legacy';
+      const nextMode = detail.engine === 'lightrag'
+        ? (detail.retrieval_mode ?? session.retrievalMode ?? 'mix')
+        : 'mix';
+      setEngine(nextEngine);
+      engineRef.current = nextEngine;
+      setRetrievalMode(nextMode);
+      retrievalModeRef.current = nextMode;
+      setLightragUnavailable(false);
       setMessages(detail.messages.map(mapSessionMessage));
+      messagesCountRef.current = detail.messages.length;
     } catch (err) {
+      if (!latestRequestRef.current.isCurrent(requestSeq)) return;
       const msg = err instanceof ApiError ? err.message : '会话加载失败';
       toast.error(msg);
     }
@@ -436,7 +564,7 @@ export function QAChat() {
                     {session.title.length > 28 ? session.title.slice(0, 28) + '...' : session.title}
                   </span>
                   <span className="block mt-0.5" style={{ color: 'var(--text-4)', fontSize: 10 }}>
-                    {Math.max(0, Math.floor(session.message_count / 2))} 轮
+                    {Math.max(0, Math.floor(session.message_count / 2))} 轮 · {session.engine === 'lightrag' ? `LightRAG/${session.retrievalMode ?? 'mix'}` : '经典引擎'}
                   </span>
                 </button>
               ))}
@@ -450,6 +578,57 @@ export function QAChat() {
 
       {/* Chat Area */}
       <div className="chat-content flex-1 flex flex-col">
+        <div
+          className="flex items-center justify-between gap-3 px-5 py-2.5"
+          style={{ background: 'var(--bg-s1)', borderBottom: '1px solid var(--border-main)' }}
+        >
+          <div className="flex items-center gap-2">
+            <span style={{ color: 'var(--text-4)', fontSize: 11 }}>问答引擎</span>
+            <select
+              aria-label="选择问答引擎"
+              value={engine}
+              disabled={isThinking || batchRunning}
+              onChange={event => startWithSelection(event.target.value as Engine, retrievalMode)}
+              className="px-2 py-1 rounded-md cursor-pointer"
+              style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 12 }}
+            >
+              <option value="legacy">经典引擎</option>
+              <option value="lightrag">LightRAG</option>
+            </select>
+            {engine === 'lightrag' && (
+              <select
+                aria-label="选择 LightRAG 检索模式"
+                value={retrievalMode}
+                disabled={isThinking || batchRunning}
+                onChange={event => startWithSelection(engine, event.target.value as LightRAGMode)}
+                className="px-2 py-1 rounded-md cursor-pointer"
+                style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 12 }}
+              >
+                {LIGHTRAG_MODES.map(mode => (
+                  <option key={mode.value} value={mode.value}>{mode.label}</option>
+                ))}
+              </select>
+            )}
+          </div>
+          <span style={{ color: 'var(--text-4)', fontSize: 11 }}>
+            {activeSessionId ? '引擎设置已绑定当前会话；切换将开始新对话' : '新会话将使用当前设置'}
+          </span>
+        </div>
+
+        {lightragUnavailable && (
+          <div className="mx-5 mt-3 flex items-center justify-between gap-3 rounded-md px-3 py-2" style={{ background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.25)' }}>
+            <span style={{ color: 'var(--red)', fontSize: 12 }}>LightRAG 当前不可用，系统没有静默切换引擎。</span>
+            <button
+              type="button"
+              onClick={() => startWithSelection('legacy', 'mix')}
+              className="px-2.5 py-1 rounded cursor-pointer"
+              style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-main)', color: 'var(--text-2)', fontSize: 11 }}
+            >
+              切换经典引擎
+            </button>
+          </div>
+        )}
+
         {/* Messages */}
         <div className="chat-messages flex-1 overflow-y-auto p-6">
           {messages.length === 0 ? (
@@ -511,8 +690,10 @@ export function QAChat() {
                           <div className="flex flex-wrap gap-2 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-muted)' }}>
                             {msg.citedNodes.map(cn => (
                               <button
-                                key={cn.id}
-                                onClick={() => navigate(`/graph?node=${cn.id}`)}
+                                key={cn.id || cn.name}
+                                onClick={() => navigate(cn.id
+                                  ? `/graph?node=${encodeURIComponent(cn.id)}&engine=${msg.engine ?? engine}`
+                                  : `/graph?engine=${msg.engine ?? engine}`)}
                                 className="flex items-center gap-1.5 px-2 py-1 rounded-full cursor-pointer"
                                 style={{
                                   background: `${TYPE_COLORS[cn.type] ?? '#8b949e'}15`,
@@ -526,6 +707,31 @@ export function QAChat() {
                                 <ExternalLink size={9} />
                               </button>
                             ))}
+                          </div>
+                        )}
+
+                        {msg.references && msg.references.length > 0 && (
+                          <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-muted)' }}>
+                            <div className="mb-2" style={{ color: 'var(--text-4)', fontSize: 11 }}>引用来源</div>
+                            <div className="flex flex-col gap-1.5">
+                              {msg.references.map((reference, index) => (
+                                <button
+                                  key={`${reference.chunk_id}-${index}`}
+                                  type="button"
+                                  onClick={() => navigate(`/graph?doc_id=${encodeURIComponent(reference.doc_id)}&engine=${msg.engine ?? engine}`)}
+                                  className="text-left rounded-md px-2.5 py-2 cursor-pointer"
+                                  title={reference.excerpt}
+                                  style={{ background: 'var(--bg-s2)', border: '1px solid var(--border-muted)' }}
+                                >
+                                  <span className="block" style={{ color: 'var(--blue)', fontSize: 11, fontWeight: 600 }}>
+                                    {reference.filename}{reference.page ? ` · 第 ${reference.page} 页` : ''}
+                                  </span>
+                                  <span className="block mt-0.5" style={{ color: 'var(--text-3)', fontSize: 11, lineHeight: 1.45 }}>
+                                    {reference.excerpt.length > 140 ? `${reference.excerpt.slice(0, 140)}…` : reference.excerpt}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
                           </div>
                         )}
 
@@ -555,7 +761,9 @@ export function QAChat() {
               <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: '1px solid var(--border-muted)' }}>
                 <div>
                   <div style={{ color: 'var(--text-1)', fontSize: 13, fontWeight: 600 }}>批量问答管理</div>
-                  <div style={{ color: 'var(--text-4)', fontSize: 11 }}>每行一个问题，最多 20 条；提交后后台逐条回答</div>
+                  <div style={{ color: 'var(--text-4)', fontSize: 11 }}>
+                    每行一个问题，最多 20 条；本批次将固定使用 {engine === 'lightrag' ? `LightRAG / ${retrievalMode}` : '经典引擎'}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
@@ -639,7 +847,10 @@ export function QAChat() {
                       </div>
                       <div className="mt-1 flex items-center justify-between gap-2" style={{ color: 'var(--text-4)', fontSize: 11 }}>
                         <span>完成 {batchResult.completed} / 失败 {batchResult.failed} / 总计 {batchResult.total}</span>
-                        <span>{formatDateTime(batchResult.updated_at ?? batchResult.created_at)}</span>
+                        <span>
+                          {batchResult.engine === 'lightrag' ? `LightRAG / ${batchResult.retrieval_mode ?? 'mix'} · ` : '经典引擎 · '}
+                          {formatDateTime(batchResult.updated_at ?? batchResult.created_at)}
+                        </span>
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         <button

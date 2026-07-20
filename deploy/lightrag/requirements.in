@@ -1,0 +1,11 @@
+# LightRAG runtime and the existing GraphRAG Studio worker share one image.
+# Resolve this file with Python 3.12 and commit the generated requirements.lock.
+-r ../../backend/requirements.txt
+
+lightrag-hku[api]==1.5.4
+
+# LightRAG installs storage drivers lazily by default. Pin the two production
+# backends explicitly so a Railway restart never downloads code at runtime.
+asyncpg>=0.31.0,<1.0.0
+pgvector>=0.4.2,<1.0.0
+neo4j>=5.23.0,<7.0.0

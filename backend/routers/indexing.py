@@ -4,13 +4,14 @@ import asyncio
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 
-from models.schemas import APIResponse, StartIndexRequest
+from models.schemas import APIResponse, RetryIndexRequest, StartIndexRequest
 from identity import RequestIdentity, get_request_identity
 from public_access import PUBLIC_DEMO_HEADER, document_is_visible, visible_document_ids
 from services import document_service as doc_svc
 from services import indexing_service as idx_svc
 
 router = APIRouter(prefix="/index", tags=["Indexing"])
+compat_router = APIRouter(prefix="/indexing", tags=["Indexing"])
 
 
 @router.post("/run-next")
@@ -41,6 +42,9 @@ async def start_indexing(body: StartIndexRequest, identity: RequestIdentity = De
             status_code=403,
             content=APIResponse.err(4003, "Only the document owner can start indexing").model_dump(),
         )
+    # A normal start always fans out to every enabled engine.  ``engine`` is
+    # accepted only for compatibility with an early preview client and is
+    # intentionally ignored; single-engine work is restricted to /retry.
     meta = idx_svc.start_indexing(body.doc_id)
     return APIResponse.ok({
         "job_id": meta["job_id"],
@@ -48,7 +52,54 @@ async def start_indexing(body: StartIndexRequest, identity: RequestIdentity = De
         "status": meta["status"],
         "stage": meta["stage"],
         "created_at": meta["created_at"],
+        "engines": meta.get("engines", {}),
     })
+
+
+@router.post("/{doc_id}/retry", status_code=202)
+async def retry_failed_engine(
+    doc_id: str,
+    body: RetryIndexRequest,
+    identity: RequestIdentity = Depends(get_request_identity),
+):
+    doc = doc_svc.get_document(doc_id)
+    if not doc:
+        return JSONResponse(
+            status_code=404,
+            content=APIResponse.err(2001, f"Document '{doc_id}' not found").model_dump(),
+        )
+    if str(doc.get("owner_id") or "default") != identity.owner_id:
+        return JSONResponse(
+            status_code=403,
+            content=APIResponse.err(4003, "Only the document owner can retry indexing").model_dump(),
+        )
+    if body.engine == "lightrag":
+        from services import lightrag_service
+
+        if not lightrag_service.enabled():
+            return JSONResponse(
+                status_code=503,
+                content=APIResponse.err(5003, "LightRAG is disabled or not configured").model_dump(),
+            )
+    meta = idx_svc.start_indexing(doc_id, {body.engine})
+    return APIResponse.ok({
+        "job_id": meta["job_id"],
+        "doc_id": doc_id,
+        "status": meta["status"],
+        "stage": meta["stage"],
+        "created_at": meta["created_at"],
+        "engines": meta.get("engines", {}),
+    })
+
+
+@compat_router.post("/{doc_id}/retry", status_code=202)
+async def retry_failed_engine_compat(
+    doc_id: str,
+    body: RetryIndexRequest,
+    identity: RequestIdentity = Depends(get_request_identity),
+):
+    """Stable operations alias used by backfill automation."""
+    return await retry_failed_engine(doc_id, body, identity)
 
 
 @router.get("/status/{job_id}")
@@ -86,7 +137,7 @@ async def get_job_result(
             status_code=404,
             content=APIResponse.err(2002, f"Job '{job_id}' not found").model_dump(),
         )
-    if result.get("status") not in ("done",) and "stats" not in result:
+    if result.get("status") not in ("done", "partial") and "stats" not in result:
         return JSONResponse(
             status_code=400,
             content=APIResponse.err(2003, f"Job '{job_id}' is still running (status={result.get('status')})").model_dump(),

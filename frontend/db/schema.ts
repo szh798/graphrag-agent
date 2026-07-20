@@ -43,6 +43,8 @@ export const publicBatches = sqliteTable(
     completed: integer('completed').notNull().default(0),
     failed: integer('failed').notNull().default(0),
     status: text('status').notNull().default('submitted'),
+    engine: text('engine').notNull().default('legacy'),
+    retrievalMode: text('retrieval_mode'),
     cancelRequested: integer('cancel_requested', { mode: 'boolean' })
       .notNull()
       .default(false),

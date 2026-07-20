@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "synthetic": true,
+  "description": "脱敏合成语料，只用于双引擎回归与盲测，不包含生产数据。",
+  "documents": [
+    {"doc_id": "fixture_doc_01", "path": "documents/fixture_doc_01.md", "source_path": "documents/fixture_doc_01.md", "format": "markdown"},
+    {"doc_id": "fixture_doc_02", "path": "documents/fixture_doc_02.md", "source_path": "documents/fixture_doc_02.md", "format": "markdown"},
+    {"doc_id": "fixture_doc_03", "path": "documents/fixture_doc_03.pdf", "source_path": "documents/fixture_doc_03.md", "format": "pdf"},
+    {"doc_id": "fixture_doc_04", "path": "documents/fixture_doc_04.pdf", "source_path": "documents/fixture_doc_04.md", "format": "pdf"},
+    {"doc_id": "fixture_doc_05", "path": "documents/fixture_doc_05.docx", "source_path": "documents/fixture_doc_05.md", "format": "office"},
+    {"doc_id": "fixture_doc_06", "path": "documents/fixture_doc_06.docx", "source_path": "documents/fixture_doc_06.md", "format": "office"},
+    {"doc_id": "fixture_doc_07", "path": "documents/fixture_doc_07.png", "source_path": "documents/fixture_doc_07.md", "format": "image"},
+    {"doc_id": "fixture_doc_08", "path": "documents/fixture_doc_08.png", "source_path": "documents/fixture_doc_08.md", "format": "image"},
+    {"doc_id": "fixture_doc_09", "path": "documents/fixture_doc_09.html", "source_path": "documents/fixture_doc_09.md", "format": "html"},
+    {"doc_id": "fixture_doc_10", "path": "documents/fixture_doc_10.txt", "source_path": "documents/fixture_doc_10.md", "format": "txt"}
+  ]
+}

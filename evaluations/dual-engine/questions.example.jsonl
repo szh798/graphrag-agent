@@ -1,0 +1,2 @@
+{"id":"local-fact-001","question":"请指出示例文档中的核心技术，并给出来源页码。","document_ids":["replace-doc-01"],"expected_reference_pages":[1],"tags":["local","citation"]}
+{"id":"cross-doc-001","question":"两份示例文档共同讨论了哪些主题？","document_ids":["replace-doc-01","replace-doc-02"],"expected_reference_pages":[],"tags":["cross-document","global"]}

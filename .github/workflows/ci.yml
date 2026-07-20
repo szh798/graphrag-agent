@@ -16,7 +16,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -56,8 +56,32 @@ jobs:
       - name: Backend unit tests
         run: backend/.venv/bin/python -m pytest backend/tests -q
 
+      - name: LightRAG deployment contract
+        run: |
+          bash -n scripts/smoke-lightrag.sh
+          backend/.venv/bin/python -m compileall -q backend/lightrag_integration backend/scripts
+          uv pip check --python backend/.venv/bin/python
+
       - name: Production build
         run: npm run build
 
       - name: Dependency audit
-        run: npm audit --omit=dev && npm --prefix frontend audit --omit=dev
+        run: |
+          npm audit --omit=dev
+          npm --prefix frontend audit --omit=dev
+          uv pip install --python backend/.venv/bin/python pip-audit
+          backend/.venv/bin/python -m pip_audit -r backend/requirements.txt
+          backend/.venv/bin/python -m pip_audit --disable-pip -r deploy/lightrag/requirements.lock
+
+  lightrag-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build pinned Railway API and Worker image
+        run: |
+          docker build \
+            --file deploy/lightrag/Dockerfile \
+            --build-arg LIGHTRAG_VERSION=1.5.4 \
+            --tag graphrag-lightrag:1.5.4 .

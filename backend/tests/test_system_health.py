@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import asyncio
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -97,6 +98,126 @@ class SystemHealthTests(unittest.TestCase):
         self.assertEqual(live.data["status"], "live")
         self.assertEqual(ready.data["status"], "ready")
         self.assertEqual(ready.data["components"]["graph_database"]["backend"], "neo4j")
+
+    def test_lightrag_worker_health_requires_a_fresh_durable_heartbeat(self):
+        system = importlib.import_module("routers.system")
+
+        class QueueRepo:
+            def profile(self):
+                return {"backend": "upstash", "durable": True}
+
+            def get_worker_heartbeat(self):
+                return {
+                    "worker_id": "railway-replica-1",
+                    "version": "test-release",
+                    "last_seen": 100,
+                    "age_seconds": 5,
+                    "ttl_seconds": 120,
+                    "fresh": True,
+                }
+
+        with patch.object(system, "APP_VERSION", "test-release"):
+            component = system._lightrag_worker_component(
+                QueueRepo(),
+                {"configured": True, "mode": "local", "components": {}},
+            )
+
+        self.assertEqual(component["status"], "ok")
+        self.assertEqual(component["mode"], "active")
+        self.assertTrue(component["durable"])
+        self.assertEqual(component["heartbeat_age_seconds"], 5)
+        self.assertNotEqual(component["worker_id"], "railway-replica-1")
+
+    def test_lightrag_worker_health_fails_closed_for_missing_or_stale_heartbeat(self):
+        system = importlib.import_module("routers.system")
+
+        class QueueRepo:
+            def __init__(self, heartbeat):
+                self.heartbeat = heartbeat
+
+            def profile(self):
+                return {"backend": "upstash", "durable": True}
+
+            def get_worker_heartbeat(self):
+                return self.heartbeat
+
+        enabled = {"configured": True, "mode": "local", "components": {}}
+        missing = system._lightrag_worker_component(QueueRepo(None), enabled)
+        stale = system._lightrag_worker_component(QueueRepo({
+            "worker_id": "replica",
+            "version": system.APP_VERSION,
+            "last_seen": 100,
+            "age_seconds": 121,
+            "ttl_seconds": 120,
+            "fresh": False,
+        }), enabled)
+
+        self.assertEqual((missing["status"], missing["mode"]), ("error", "missing"))
+        self.assertEqual((stale["status"], stale["mode"]), ("error", "stale"))
+
+    def test_backfill_health_reads_switch_maintenance_state_and_failures(self):
+        system = importlib.import_module("routers.system")
+
+        class AppRepo:
+            def load_job_meta(self, _job_id):
+                return {
+                    "status": "failed",
+                    "progress": {"failed": 1},
+                    "updated_at": "2026-07-20T00:00:00+00:00",
+                }
+
+        class QueueRepo:
+            def is_durable(self):
+                return True
+
+        documents = [
+            {"indexes": {"lightrag": {"status": "done"}}},
+            {"indexes": {"lightrag": {"status": "failed"}}},
+        ]
+        with patch.dict(os.environ, {
+            "LIGHTRAG_BACKFILL_ON_START": "true",
+            "LIGHTRAG_BACKFILL_ALL_TENANTS_ACK": "YES",
+            "LIGHTRAG_BACKFILL_RELEASE_ID": "health-test",
+        }, clear=False):
+            component = system._lightrag_backfill_component(
+                AppRepo(),
+                QueueRepo(),
+                documents,
+                {"configured": True, "mode": "local"},
+            )
+
+        self.assertEqual(component["status"], "error")
+        self.assertEqual(component["mode"], "failed")
+        self.assertEqual(component["maintenance_status"], "failed")
+        self.assertEqual(component["failed"], 1)
+        self.assertEqual(component["done"], 1)
+
+    def test_backfill_health_is_disabled_when_startup_switch_is_off(self):
+        system = importlib.import_module("routers.system")
+
+        class AppRepo:
+            def load_job_meta(self, _job_id):
+                return None
+
+        class QueueRepo:
+            def is_durable(self):
+                return True
+
+        with patch.dict(os.environ, {
+            "LIGHTRAG_BACKFILL_ON_START": "false",
+            "LIGHTRAG_BACKFILL_ALL_TENANTS_ACK": "",
+        }, clear=False):
+            component = system._lightrag_backfill_component(
+                AppRepo(),
+                QueueRepo(),
+                [],
+                {"configured": True, "mode": "local"},
+            )
+
+        self.assertEqual(component["status"], "ok")
+        self.assertEqual(component["mode"], "disabled")
+        self.assertFalse(component["enabled"])
+        self.assertFalse(component["configured"])
 
 
 if __name__ == "__main__":

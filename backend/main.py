@@ -100,6 +100,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 PREFIX = "/api/v1"
 app.include_router(documents.router, prefix=PREFIX)
 app.include_router(indexing.router,  prefix=PREFIX)
+app.include_router(indexing.compat_router, prefix=PREFIX)
 app.include_router(kg.router,        prefix=PREFIX)
 app.include_router(query.router,     prefix=PREFIX)
 app.include_router(search.router,    prefix=PREFIX)
