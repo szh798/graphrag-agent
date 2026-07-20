@@ -2,10 +2,20 @@
 # Resolve this file with Python 3.12 and commit the generated requirements.lock.
 -r ../../backend/requirements.txt
 
-lightrag-hku[api]==1.5.4
+# The product exposes its own signed FastAPI runtime. Do not install LightRAG's
+# optional WebUI/API stack: it is unused here and pulls a separate auth stack.
+lightrag-hku==1.5.4
+
+# The internal providers call LightRAG's OpenAI-compatible adapters directly;
+# keep the supported major version even without the upstream API extra.
+openai>=2.0.0,<3.0.0
 
 # LightRAG installs storage drivers lazily by default. Pin the two production
 # backends explicitly so a Railway restart never downloads code at runtime.
 asyncpg>=0.31.0,<1.0.0
 pgvector>=0.4.2,<1.0.0
 neo4j>=5.23.0,<7.0.0
+
+# SQLAlchemy only requests greenlet on selected Linux architectures. Keeping it
+# explicit makes the hash lock generated on macOS valid for Railway x86_64.
+greenlet>=3.2.4,<4.0.0

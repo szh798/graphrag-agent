@@ -20,6 +20,10 @@ class LightRAGDeploymentAssetTests(unittest.TestCase):
         worker_toml = tomllib.loads(worker_config)
 
         self.assertIn("lightrag-hku==1.5.4", lock)
+        self.assertIn("greenlet==", lock)
+        self.assertRegex(lock, r"(?m)^openai==2\.")
+        self.assertNotIn("python-jose==", lock)
+        self.assertNotIn("ecdsa==", lock)
         self.assertIn("COPY backend/lightrag_integration", dockerfile)
         self.assertIn("lightrag_integration.runtime:app", dockerfile)
         self.assertIn('healthcheckPath = "/live"', api_config)

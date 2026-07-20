@@ -46,6 +46,10 @@ LightRAG 版本固定为 `lightrag-hku==1.5.4`。完整 Python 3.12 依赖及发
 `deploy/lightrag/requirements.lock`。升级时先修改 `requirements.in`，重新解析锁，
 跑完双引擎评测后才能发布，禁止使用 `latest`。
 
+镜像只安装 LightRAG Core；产品使用自己的 HMAC 内部接口，不安装也不暴露
+LightRAG 自带 WebUI/API extra。`greenlet` 作为显式跨平台依赖锁定，避免在 macOS
+生成的哈希锁遗漏 Railway Linux x86_64 的 SQLAlchemy 条件依赖。
+
 ## 3. 环境变量清单
 
 真实值只进入 Vercel/Railway Secret Manager；`deploy/lightrag/env.example` 是无密钥
