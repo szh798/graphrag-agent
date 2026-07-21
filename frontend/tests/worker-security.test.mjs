@@ -115,6 +115,27 @@ test('visitor cookie is a raw canonical lowercase UUID and uses safe attributes'
   assert.match(serialized, /Secure/)
 })
 
+test('canonical client visitor fallback is stable while a valid cookie keeps priority', () => {
+  const clientVisitor = '123e4567-e89b-42d3-a456-426614174000'
+  const cookieVisitor = '223e4567-e89b-42d3-a456-426614174001'
+
+  assert.deepEqual(getOrCreateVisitor(new Headers(), clientVisitor), {
+    id: clientVisitor,
+    isNew: true,
+  })
+  assert.deepEqual(
+    getOrCreateVisitor(
+      new Headers({ cookie: `graphrag_visitor=${cookieVisitor}` }),
+      clientVisitor,
+    ),
+    { id: cookieVisitor, isNew: false },
+  )
+
+  const rejected = getOrCreateVisitor(new Headers(), 'not-a-uuid')
+  assert.notEqual(rejected.id, 'not-a-uuid')
+  assert.match(rejected.id, /^[0-9a-f-]{36}$/)
+})
+
 test('backend headers drop caller identity and overwrite trusted proxy headers', () => {
   const incoming = new Headers({
     Authorization: 'Bearer attacker',
@@ -122,6 +143,7 @@ test('backend headers drop caller identity and overwrite trusted proxy headers',
     'OAI-User-ID': 'attacker',
     'X-Forwarded-User': 'attacker',
     'X-GraphRAG-Visitor-ID': 'attacker',
+    'X-GraphRAG-Client-Visitor-ID': 'attacker-client',
     'X-GraphRAG-Proxy-Secret': 'attacker',
     Host: 'attacker.example',
     Connection: 'keep-alive',
@@ -142,6 +164,7 @@ test('backend headers drop caller identity and overwrite trusted proxy headers',
   assert.equal(headers.get('forwarded'), null)
   assert.equal(headers.get('cf-connecting-ip'), null)
   assert.equal(headers.get('content-length'), null)
+  assert.equal(headers.get('x-graphrag-client-visitor-id'), null)
   assert.equal(headers.get('content-type'), 'application/json')
   assert.equal(headers.get('x-graphrag-visitor-id'), visitorId)
   assert.equal(headers.get('x-graphrag-proxy-secret'), 'server-secret')

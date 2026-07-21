@@ -12,14 +12,49 @@ const BASE = import.meta.env.VITE_API_BASE_URL ?? (
 
 type AuthTokenProvider = () => Promise<string | null>;
 let authTokenProvider: AuthTokenProvider | null = null;
+let inMemoryVisitorId: string | null = null;
+
+const CLIENT_VISITOR_STORAGE_KEY = 'graphrag_client_visitor_id_v1';
+const CLIENT_VISITOR_HEADER = 'X-GraphRAG-Client-Visitor-ID';
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function setAuthTokenProvider(provider: AuthTokenProvider | null) {
   authTokenProvider = provider;
 }
 
+function getClientVisitorId(): string | null {
+  if (typeof window === 'undefined' || typeof globalThis.crypto?.randomUUID !== 'function') {
+    return null;
+  }
+  if (inMemoryVisitorId) return inMemoryVisitorId;
+
+  try {
+    const existing = window.localStorage.getItem(CLIENT_VISITOR_STORAGE_KEY)?.trim().toLowerCase();
+    if (existing && CANONICAL_UUID.test(existing)) {
+      inMemoryVisitorId = existing;
+      return existing;
+    }
+  } catch {
+    // Storage can be unavailable in privacy modes. The in-memory fallback is
+    // still stable for the lifetime of this tab.
+  }
+
+  inMemoryVisitorId = globalThis.crypto.randomUUID().toLowerCase();
+  try {
+    window.localStorage.setItem(CLIENT_VISITOR_STORAGE_KEY, inMemoryVisitorId);
+  } catch {
+    // Keep the in-memory identity when persistent storage is unavailable.
+  }
+  return inMemoryVisitorId;
+}
+
 export async function getAuthorizationHeaders(): Promise<Record<string, string>> {
   const token = await authTokenProvider?.();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const visitorId = getClientVisitorId();
+  return {
+    ...(visitorId ? { [CLIENT_VISITOR_HEADER]: visitorId } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 export class ApiError extends Error {

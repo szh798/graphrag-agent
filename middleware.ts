@@ -158,7 +158,14 @@ async function recoveryDispatch(request: Request, proxySecret: string, visitorId
 
 export default async function middleware(request: Request): Promise<Response> {
   const url = new URL(request.url)
-  const visitor = getOrCreateVisitor(request.headers)
+  // Some reverse-proxy paths keep the browser Cookie at the edge but omit it
+  // before Vercel Routing Middleware. The SPA therefore supplies a stable,
+  // canonical UUID candidate. A valid durable Cookie still wins, and the
+  // candidate is stripped before trusted backend headers are rebuilt.
+  const visitor = getOrCreateVisitor(
+    request.headers,
+    request.headers.get('x-graphrag-client-visitor-id') ?? '',
+  )
   const requestId = request.headers.get('x-request-id') || crypto.randomUUID()
   const outgoingResponseHeaders = responseHeaders(visitor, request.url, requestId)
   const proxySecret = process.env.BACKEND_PROXY_SECRET?.trim() ?? ''

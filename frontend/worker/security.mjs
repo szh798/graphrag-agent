@@ -169,10 +169,14 @@ function cookieValue(cookieHeader, name) {
   return null
 }
 
-export function getOrCreateVisitor(headers) {
+export function getOrCreateVisitor(headers, clientVisitorId = '') {
   const existing = cookieValue(headers.get('cookie'), VISITOR_COOKIE_NAME)
   if (existing && CANONICAL_UUID.test(existing)) {
     return { id: existing, isNew: false }
+  }
+  const requested = String(clientVisitorId || '').trim().toLowerCase()
+  if (CANONICAL_UUID.test(requested)) {
+    return { id: requested, isNew: true }
   }
   return { id: crypto.randomUUID().toLowerCase(), isNew: true }
 }
