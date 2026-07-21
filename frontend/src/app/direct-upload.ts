@@ -23,19 +23,27 @@ export async function uploadDocumentDirect(file: File, options: DirectUploadOpti
 
   const headers = await getAuthorizationHeaders();
 
-  return upload(`uploads/${file.name}`, file, {
-    access: 'private',
-    handleUploadUrl: '/api/v1/documents/upload/direct',
-    multipart: file.size > 100 * 1024 * 1024,
-    abortSignal: options.signal,
-    onUploadProgress: options.onProgress,
-    headers,
-    clientPayload: JSON.stringify({
-      filename: file.name,
-      sizeBytes: file.size,
-      language: options.language ?? 'ch',
-      enableFormula: options.enableFormula !== false,
-      enableTable: options.enableTable !== false,
-    }),
-  });
+  try {
+    return await upload(`uploads/${file.name}`, file, {
+      access: 'private',
+      handleUploadUrl: '/api/v1/documents/upload/direct',
+      multipart: file.size > 100 * 1024 * 1024,
+      abortSignal: options.signal,
+      onUploadProgress: options.onProgress,
+      headers,
+      clientPayload: JSON.stringify({
+        filename: file.name,
+        sizeBytes: file.size,
+        language: options.language ?? 'ch',
+        enableFormula: options.enableFormula !== false,
+        enableTable: options.enableTable !== false,
+      }),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (/retrieve the client token/i.test(message)) {
+      throw new Error('上传服务暂时无法签发令牌，请稍后重试', { cause: error });
+    }
+    throw error;
+  }
 }

@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { next } from '@vercel/functions'
+
 import {
   RATE_LIMIT_POLICIES,
   bearerToken,
   jsonError,
   rateLimitDimensions,
+  restoreRequestBodyLength,
   responseHeaders,
   trustedInternalRoute,
 } from '../../vercel-perimeter.mjs'
@@ -109,4 +112,35 @@ test('perimeter errors remain structured and traceable', async () => {
     request_id: 'req-2',
     data: null,
   })
+})
+
+test('Vercel next preserves body length without widening proxy header forwarding', () => {
+  const incoming = new Headers({
+    'Content-Length': '247',
+    'Transfer-Encoding': 'chunked',
+  })
+  const postHeaders = new Headers()
+  const getHeaders = new Headers()
+
+  restoreRequestBodyLength('POST', incoming, postHeaders)
+  restoreRequestBodyLength('GET', incoming, getHeaders)
+
+  assert.equal(postHeaders.get('content-length'), '247')
+  assert.equal(postHeaders.has('transfer-encoding'), false)
+  assert.equal(getHeaders.has('content-length'), false)
+
+  const nextResponse = next({ request: { headers: postHeaders } })
+  assert.match(
+    nextResponse.headers.get('x-middleware-override-headers') ?? '',
+    /(?:^|,)content-length(?:,|$)/,
+  )
+  assert.equal(nextResponse.headers.get('x-middleware-request-content-length'), '247')
+
+  const invalidHeaders = new Headers()
+  restoreRequestBodyLength(
+    'POST',
+    new Headers({ 'Content-Length': 'not-a-number' }),
+    invalidHeaders,
+  )
+  assert.equal(invalidHeaders.has('content-length'), false)
 })
