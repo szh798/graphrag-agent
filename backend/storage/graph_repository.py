@@ -7,12 +7,93 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
+import unicodedata
 from typing import Any
 
 import networkx as nx
 
 from storage import file_store as fs
+
+
+_ASCII_WORD_RE = re.compile(r"[a-z0-9]+")
+_ASCII_TERM_RE = re.compile(r"^[a-z0-9]+$")
+_CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+_ASCII_QUERY_STOPWORDS = {
+    "a", "about", "an", "and", "are", "at", "be", "been", "being", "by",
+    "can", "could", "did", "do", "does", "for", "from", "how", "in", "is",
+    "it", "me", "of", "on", "or", "please", "should", "tell", "the", "this",
+    "to", "was", "were", "what", "when", "where", "which", "who", "why", "with",
+    "would",
+}
+_CJK_QUERY_NOISE_PHRASES = tuple(sorted({
+    "是什么", "是多少", "在哪里", "什么时候", "为什么",
+    "有哪些", "是哪个", "是哪些", "怎么样", "能不能",
+    "是否", "什么", "为何", "怎么", "怎样", "如何", "多少", "哪个", "哪些",
+    "哪里", "何时", "时候", "可以", "应该", "关于", "一下", "请问",
+}, key=len, reverse=True))
+_LEXICAL_CHUNK_TEXT_LIMIT = 1600
+_LEXICAL_CHUNK_CONTEXT_BEFORE = 240
+
+
+def _normalized_lexical_text(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).lower()
+
+
+def _lexical_terms(value: Any) -> list[str]:
+    """Return conservative English tokens and CJK bigrams for page retrieval."""
+
+    normalized = _normalized_lexical_text(value)
+    for phrase in _CJK_QUERY_NOISE_PHRASES:
+        normalized = normalized.replace(phrase, " ")
+    terms: list[str] = []
+    terms.extend(
+        word for word in _ASCII_WORD_RE.findall(normalized)
+        if len(word) >= 2 and word not in _ASCII_QUERY_STOPWORDS
+    )
+    for run in _CJK_RUN_RE.findall(normalized):
+        if len(run) == 1:
+            continue
+        if len(run) == 2:
+            terms.append(run)
+            continue
+        terms.extend(
+            run[index:index + 2]
+            for index in range(len(run) - 1)
+        )
+    # Preserve order for deterministic SQL parameters and scoring.
+    return list(dict.fromkeys(terms))[:32]
+
+
+def _lexical_chunk_score(query: Any, text: Any) -> float:
+    query_text = _normalized_lexical_text(query)
+    chunk_text = _normalized_lexical_text(text)
+    terms = _lexical_terms(query_text)
+    if not terms or not chunk_text:
+        return 0.0
+
+    ascii_words = set(_ASCII_WORD_RE.findall(chunk_text))
+    matched = [
+        term for term in terms
+        if (term in ascii_words if _ASCII_TERM_RE.fullmatch(term) else term in chunk_text)
+    ]
+    if not matched:
+        return 0.0
+    # Multi-term questions require corroboration. A single substantial token
+    # remains useful for entity/product-name searches such as "Python".
+    if len(terms) > 1 and len(matched) < 2:
+        return 0.0
+    if len(terms) == 1 and len(terms[0]) < 2:
+        return 0.0
+
+    coverage = len(matched) / len(terms)
+    score = float(len(matched)) + coverage
+    compact_query = re.sub(r"\s+", "", query_text)
+    compact_chunk = re.sub(r"\s+", "", chunk_text)
+    if compact_query and compact_query in compact_chunk:
+        score += 2.0
+    return round(score, 6)
 
 
 def _node_id(value: Any) -> str:
@@ -283,12 +364,24 @@ class FileGraphRepository:
         return {"query": q, "matched_nodes": matched, "subgraph_edges": subgraph_edges}
 
     def hybrid_retrieve(self, q: str, embedding: list[float] | None = None,
-                        limit: int = 8, include_neighbors: bool = True) -> dict:
+                        limit: int = 8, include_neighbors: bool = True,
+                        allowed_document_ids: set[str] | None = None) -> dict:
         graph_result = self.search_graph(q, include_neighbors=include_neighbors)
+        nodes = list(graph_result.get("matched_nodes", []))
+        edges = list(graph_result.get("subgraph_edges", []))
+        if allowed_document_ids is not None:
+            nodes = [
+                node for node in nodes
+                if str(node.get("source_doc") or node.get("doc_id") or "") in allowed_document_ids
+            ]
+            edges = [
+                edge for edge in edges
+                if str(edge.get("doc_id") or "") in allowed_document_ids
+            ]
         return {
             "query": q,
-            "nodes": graph_result.get("matched_nodes", [])[:limit],
-            "edges": graph_result.get("subgraph_edges", [])[: max(limit * 4, 20)],
+            "nodes": nodes[:limit],
+            "edges": edges[: max(limit * 4, 20)],
             "chunks": [],
         }
 
@@ -422,6 +515,141 @@ class PostgresGraphRepository(FileGraphRepository):
     def _load_edges(self) -> list[dict]:
         self._refresh_cache()
         return [dict(item) for item in self._cached_edges]
+
+    def _lexical_chunks(
+        self,
+        q: str,
+        *,
+        limit: int,
+        allowed_document_ids: set[str] | None,
+    ) -> list[dict]:
+        """Retrieve a small, tenant-scoped candidate set and rank it in Python.
+
+        The current Postgres schema stores page text in JSONB but has no vector
+        column.  We deliberately avoid loading the full chunk table: SQL first
+        applies the authorized document scope and a lexical prefilter, then the
+        bounded rows are ranked using English tokens and CJK bigrams.
+        """
+
+        terms = _lexical_terms(q)
+        if not terms or limit <= 0 or allowed_document_ids == set():
+            return []
+
+        candidate_limit = min(max(limit * 32, 64), 256)
+        required_matches = 1 if len(terms) == 1 else 2
+        ascii_flags = [bool(_ASCII_TERM_RE.fullmatch(term)) for term in terms]
+        scoped_where = ""
+        params: list[Any] = []
+        if allowed_document_ids is not None:
+            scoped_where = "WHERE doc_id = ANY(%s)"
+            params.append(sorted(allowed_document_ids))
+        params.extend([
+            terms,
+            ascii_flags,
+            required_matches,
+            _LEXICAL_CHUNK_CONTEXT_BEFORE,
+            _LEXICAL_CHUNK_TEXT_LIMIT,
+            candidate_limit,
+        ])
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    WITH scoped AS (
+                      SELECT
+                        chunk_id,
+                        doc_id,
+                        payload,
+                        updated_at,
+                        coalesce(payload->>'text', payload->>'content', '') AS full_text,
+                        lower(coalesce(payload->>'text', payload->>'content', '')) AS lexical_text
+                      FROM graph_chunks
+                      {scoped_where}
+                    ), matched AS (
+                      SELECT
+                        scoped.*,
+                        lexical.match_position,
+                        lexical.match_count
+                      FROM scoped
+                      CROSS JOIN LATERAL (
+                        SELECT
+                          min(nullif(position(wanted.term IN scoped.lexical_text), 0)) AS match_position,
+                          count(*) AS match_count
+                        FROM unnest(%s::text[], %s::boolean[]) AS wanted(term, is_ascii)
+                        WHERE CASE
+                          WHEN wanted.is_ascii THEN scoped.lexical_text ~
+                            ('(^|[^a-z0-9])' || wanted.term || '([^a-z0-9]|$)')
+                          ELSE position(wanted.term IN scoped.lexical_text) > 0
+                        END
+                      ) AS lexical
+                      WHERE lexical.match_count >= %s
+                    )
+                    SELECT
+                      scoped.chunk_id,
+                      scoped.doc_id,
+                      scoped.payload - 'text' - 'content' AS payload,
+                      substring(
+                        scoped.full_text
+                        FROM greatest(1, scoped.match_position - %s)
+                        FOR %s
+                      ) AS text
+                    FROM matched AS scoped
+                    ORDER BY scoped.updated_at DESC, scoped.chunk_id
+                    LIMIT %s
+                    """,
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+
+        scored: list[dict] = []
+        for row in rows:
+            doc_id = str(row.get("doc_id") or "")
+            # Defense in depth for test doubles and future query changes.
+            if allowed_document_ids is not None and doc_id not in allowed_document_ids:
+                continue
+            payload = dict(row.get("payload") or {})
+            payload["chunk_id"] = str(row.get("chunk_id") or payload.get("chunk_id") or "")
+            # The relational columns are authoritative for scope and identity;
+            # never trust duplicated JSONB fields over the filtered row.
+            payload["doc_id"] = doc_id
+            # SQL projects only a bounded window. Slice once more here as
+            # defense in depth for test doubles and future query changes.
+            text = str(row.get("text") or "")[:_LEXICAL_CHUNK_TEXT_LIMIT]
+            payload["text"] = text
+            score = _lexical_chunk_score(q, text)
+            if score <= 0:
+                continue
+            payload["score"] = score
+            scored.append(payload)
+        scored.sort(key=lambda item: (-float(item.get("score") or 0), str(item.get("chunk_id") or "")))
+        return scored[:limit]
+
+    def hybrid_retrieve(self, q: str, embedding: list[float] | None = None,
+                        limit: int = 8, include_neighbors: bool = True,
+                        allowed_document_ids: set[str] | None = None) -> dict:
+        graph_result = self.search_graph(q, include_neighbors=include_neighbors)
+        nodes = list(graph_result.get("matched_nodes", []))
+        edges = list(graph_result.get("subgraph_edges", []))
+        if allowed_document_ids is not None:
+            nodes = [
+                node for node in nodes
+                if str(node.get("source_doc") or node.get("doc_id") or "") in allowed_document_ids
+            ]
+            edges = [
+                edge for edge in edges
+                if str(edge.get("doc_id") or "") in allowed_document_ids
+            ]
+        return {
+            "query": q,
+            "nodes": nodes[:limit],
+            "edges": edges[: max(limit * 4, 20)],
+            "chunks": self._lexical_chunks(
+                q,
+                limit=limit,
+                allowed_document_ids=allowed_document_ids,
+            ),
+        }
 
     def upsert_document_graph(self, document: dict, nodes: list[dict], edges: list[dict], chunks: list[dict] | None = None) -> None:
         self.ensure_schema()
@@ -866,13 +1094,16 @@ class Neo4jGraphRepository:
         return {"query": q, "matched_nodes": matched, "subgraph_edges": [self._record_value(record, "edge", {}) for record in records]}
 
     def hybrid_retrieve(self, q: str, embedding: list[float] | None = None,
-                        limit: int = 8, include_neighbors: bool = True) -> dict:
+                        limit: int = 8, include_neighbors: bool = True,
+                        allowed_document_ids: set[str] | None = None) -> dict:
+        allowed_ids = sorted(allowed_document_ids) if allowed_document_ids is not None else None
         chunks: list[dict] = []
         if embedding:
             chunk_records = self._execute(
                 """
                 CALL db.index.vector.queryNodes('graph_chunk_embedding_vector', $limit, $embedding)
                 YIELD node, score
+                WHERE $allowed_document_ids IS NULL OR coalesce(node.doc_id, '') IN $allowed_document_ids
                 RETURN node {
                   .*,
                   chunk_id: node.chunk_id,
@@ -881,7 +1112,7 @@ class Neo4jGraphRepository:
                   score: score
                 } AS chunk
                 """,
-                {"embedding": embedding, "limit": limit},
+                {"embedding": embedding, "limit": limit, "allowed_document_ids": allowed_ids},
             )
             chunks = [self._record_value(record, "chunk", {}) for record in chunk_records]
 
@@ -889,6 +1120,7 @@ class Neo4jGraphRepository:
             """
             CALL db.index.fulltext.queryNodes('graph_entity_name_fulltext', $q)
             YIELD node, score
+            WHERE $allowed_document_ids IS NULL OR coalesce(node.source_doc, '') IN $allowed_document_ids
             RETURN node {
               .*,
               id: node.id,
@@ -897,7 +1129,7 @@ class Neo4jGraphRepository:
             } AS node
             LIMIT $limit
             """,
-            {"q": q, "limit": limit},
+            {"q": q, "limit": limit, "allowed_document_ids": allowed_ids},
         )
         nodes = [self._plain_node(self._record_value(record, "node", {})) for record in node_records]
         matched_ids = [node["id"] for node in nodes]
@@ -907,7 +1139,8 @@ class Neo4jGraphRepository:
             edge_records = self._execute(
                 """
                 MATCH (s:Entity)-[r:RELATED_TO]-(t:Entity)
-                WHERE s.id IN $matched_ids OR t.id IN $matched_ids
+                WHERE (s.id IN $matched_ids OR t.id IN $matched_ids)
+                  AND ($allowed_document_ids IS NULL OR coalesce(r.doc_id, '') IN $allowed_document_ids)
                 RETURN DISTINCT {
                   id: coalesce(r.id, elementId(r)),
                   source: s.id,
@@ -918,7 +1151,7 @@ class Neo4jGraphRepository:
                 } AS edge
                 LIMIT 500
                 """,
-                {"matched_ids": matched_ids},
+                {"matched_ids": matched_ids, "allowed_document_ids": allowed_ids},
             )
             edges = [self._record_value(record, "edge", {}) for record in edge_records]
 

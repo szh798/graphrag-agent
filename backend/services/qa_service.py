@@ -1,6 +1,7 @@
 """QA Service — Agentic-RAG wrapper."""
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import time
@@ -78,6 +79,35 @@ def _should_use_question_embedding(graph_repo) -> bool:
     return profile.get("backend") == "neo4j"
 
 
+def _hybrid_retrieve_scoped(
+    graph_repo,
+    question: str,
+    *,
+    embedding: list[float] | None,
+    allowed_document_ids: set[str] | None,
+) -> dict:
+    """Call current repositories with scope while tolerating older test stubs."""
+
+    retrieve = getattr(
+        graph_repo,
+        "hybrid_retrieve",
+        lambda *args, **kwargs: {"nodes": [], "edges": [], "chunks": []},
+    )
+    kwargs: dict = {"embedding": embedding}
+    try:
+        parameters = inspect.signature(retrieve).parameters.values()
+        supports_scope = any(
+            parameter.name == "allowed_document_ids"
+            or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    except (TypeError, ValueError):
+        supports_scope = False
+    if supports_scope:
+        kwargs["allowed_document_ids"] = allowed_document_ids
+    return retrieve(question, **kwargs)
+
+
 def _question_embedding(question: str, graph_repo) -> list[float] | None:
     if not _should_use_question_embedding(graph_repo):
         return None
@@ -127,6 +157,50 @@ def _references_from_chunks(chunks: list[dict]) -> list[dict]:
             "page": page,
             "chunk_id": str(chunk.get("chunk_id") or ""),
             "excerpt": text[:280],
+        })
+    return references
+
+
+def _references_from_cited_nodes(cited_node_ids: list[str], nodes: list[dict]) -> list[dict]:
+    """Build document references when entity retrieval succeeds without chunks.
+
+    Vector retrieval is optional for the legacy engine.  A query can therefore
+    be answered from graph tools even when no embedded page chunk was returned.
+    Keep those answers traceable by resolving the entities actually cited by
+    the agent back to their indexed document and page.
+    """
+
+    cited = {str(node_id) for node_id in cited_node_ids if str(node_id)}
+    if not cited:
+        return []
+
+    repo = app_store.get_app_repository()
+    load_index = getattr(repo, "load_documents_index", None)
+    docs = load_index() if callable(load_index) else {}
+    references: list[dict] = []
+    seen: set[tuple[str, int | None]] = set()
+    for node in nodes:
+        node_id = str(node.get("id") or node.get("entity_id") or "")
+        if node_id not in cited:
+            continue
+        doc_id = str(node.get("source_doc") or node.get("doc_id") or "")
+        if not doc_id:
+            continue
+        page_raw = node.get("page")
+        page = int(page_raw) + 1 if isinstance(page_raw, int) else None
+        key = (doc_id, page)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = str(node.get("name") or "").strip()
+        description = str(node.get("description") or "").strip()
+        excerpt = description or name
+        references.append({
+            "doc_id": doc_id,
+            "filename": str((docs.get(doc_id) or {}).get("filename") or doc_id),
+            "page": page,
+            "chunk_id": f"entity:{node_id}",
+            "excerpt": excerpt[:280],
         })
     return references
 
@@ -259,9 +333,11 @@ def run_query(
             raise ValueError("KG_EMPTY")
 
         embedding = _question_embedding(question, graph_repo)
-        retrieval = getattr(graph_repo, "hybrid_retrieve", lambda *args, **kwargs: {"nodes": [], "edges": [], "chunks": []})(
+        retrieval = _hybrid_retrieve_scoped(
+            graph_repo,
             question,
             embedding=embedding,
+            allowed_document_ids=allowed_document_ids,
         )
         if allowed_document_ids is not None:
             retrieval["nodes"] = [
@@ -288,6 +364,11 @@ def run_query(
         else:
             result = run_qa(question, qa_history, nodes, edges)
         result["references"] = _references_from_chunks(context_chunks)
+        if not result["references"]:
+            result["references"] = _references_from_cited_nodes(
+                list(result.get("cited_nodes") or []),
+                nodes,
+            )
         result["cited_entities"] = list(result.get("cited_nodes") or [])
         result["model"] = result.get("model") or LLM_MODEL
         result["provider"] = result.get("provider") or LLM_PROVIDER

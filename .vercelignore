@@ -3,6 +3,7 @@
 !**/.env.example
 !**/.env.offline.example
 .agents
+outputs
 skills-lock.json
 node_modules
 backend/.venv

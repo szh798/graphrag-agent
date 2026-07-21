@@ -67,7 +67,10 @@ def make_tools(G: nx.Graph) -> list:
             hop_nodes = by_hop[hop]
             lines.append(f"\n  Hop {hop} — {len(hop_nodes)} related entities:")
             for n in hop_nodes[:20]:
-                lines.append(f"    [{n.get('type','?')}] {n.get('name','?')}")
+                lines.append(
+                    f"    [{n.get('type','?')}] {n.get('name','?')} "
+                    f"(page={n.get('page',0)}, id={n.get('id','')})"
+                )
             if len(hop_nodes) > 20:
                 lines.append(f"    ... and {len(hop_nodes)-20} more")
         lines.append(f"\n  Total related entities: {sum(len(v) for v in by_hop.values())}")
@@ -115,7 +118,10 @@ def make_tools(G: nx.Graph) -> list:
             lines.append("  Top 5 central nodes:")
             for nid, c in top5:
                 nd = G.nodes[nid]
-                lines.append(f"    [{nd.get('type','?')}] {nd.get('name','?')} (centrality={c:.3f})")
+                lines.append(
+                    f"    [{nd.get('type','?')}] {nd.get('name','?')} "
+                    f"(centrality={c:.3f}, id={nd.get('id', nid)})"
+                )
         return "\n".join(lines)
 
     return [search_entities, get_neighbors, get_entities_by_type, describe_graph]

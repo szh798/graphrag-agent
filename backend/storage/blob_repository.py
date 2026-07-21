@@ -94,7 +94,14 @@ class VercelBlobRepository:
     def save_upload(self, key: str, content: bytes, content_type: str | None = None) -> dict:
         return self.save_bytes(key, content, content_type)
 
-    def save_bytes(self, key: str, content: bytes, content_type: str | None = None) -> dict:
+    def save_bytes(
+        self,
+        key: str,
+        content: bytes,
+        content_type: str | None = None,
+        *,
+        overwrite: bool = False,
+    ) -> dict:
         client = self._client()
         put = getattr(client, "put", None)
         if not callable(put):
@@ -104,6 +111,7 @@ class VercelBlobRepository:
             content,
             access=os.getenv("BLOB_ACCESS", "private"),
             content_type=content_type,
+            overwrite=overwrite,
             token=self.token,
         )
         if is_dataclass(result):
@@ -116,7 +124,15 @@ class VercelBlobRepository:
         }
 
     def save_json(self, key: str, data: Any) -> dict:
-        return self.save_bytes(key, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"), "application/json")
+        # Job artifact paths are deterministic. Durable queue recovery reruns
+        # the same job_id, so JSON artifacts need the same replace semantics as
+        # FileBlobRepository.write_bytes(); otherwise the second PUT is a 400.
+        return self.save_bytes(
+            key,
+            json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"),
+            "application/json",
+            overwrite=True,
+        )
 
     def read_json(self, key: str) -> Any:
         data = self.read_bytes({"key": key, "url": key})
