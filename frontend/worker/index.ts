@@ -146,6 +146,11 @@ async function proxyApi(
     requestId,
     request.headers.get('Authorization'),
   )
+  // BACKEND_ORIGIN is another Vercel perimeter, not FastAPI directly. The
+  // first proxy intentionally strips caller-supplied GraphRAG headers, then
+  // supplies its resolved visitor as the trusted fallback so Vercel does not
+  // create a second anonymous owner for the same browser.
+  headers.set('X-GraphRAG-Client-Visitor-ID', visitorId)
 
   const response = sanitizeBackendResponse(
     await fetch(new Request(forwarded, { headers, redirect: 'manual' })),
@@ -349,7 +354,13 @@ async function serveSite(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
-    const visitor = getOrCreateVisitor(request.headers)
+    // Sites can receive the browser request without its Cookie on some proxy
+    // paths. The SPA's canonical local visitor id keeps the resolved owner
+    // stable, while a valid HttpOnly Cookie still takes priority.
+    const visitor = getOrCreateVisitor(
+      request.headers,
+      request.headers.get('X-GraphRAG-Client-Visitor-ID') ?? '',
+    )
     let response: Response
 
     if (url.pathname.startsWith('/api/')) {

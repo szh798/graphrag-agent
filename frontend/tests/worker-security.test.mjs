@@ -197,6 +197,55 @@ test('backend headers forward only the explicitly supplied bearer session', () =
   assert.equal(invalid.get('authorization'), null)
 })
 
+test('Sites resolves one visitor across its Vercel double-proxy hop', () => {
+  const sitesVisitor = '123e4567-e89b-42d3-a456-426614174000'
+  const spoofedVisitor = '223e4567-e89b-42d3-a456-426614174001'
+  const incoming = new Headers({
+    Cookie: `graphrag_visitor=${sitesVisitor}`,
+    'X-GraphRAG-Client-Visitor-ID': spoofedVisitor,
+    'X-GraphRAG-Visitor-ID': spoofedVisitor,
+    'X-GraphRAG-Proxy-Secret': 'attacker-secret',
+  })
+
+  // A durable Sites cookie wins over the browser fallback. The first proxy
+  // then removes every caller-supplied identity before rebuilding the hop.
+  const resolvedAtSites = getOrCreateVisitor(
+    incoming,
+    incoming.get('X-GraphRAG-Client-Visitor-ID'),
+  )
+  assert.deepEqual(resolvedAtSites, { id: sitesVisitor, isNew: false })
+
+  const sitesToVercel = buildBackendHeaders(
+    incoming,
+    resolvedAtSites.id,
+    'sites-secret',
+    'sites-request',
+  )
+  assert.equal(sitesToVercel.get('x-graphrag-client-visitor-id'), null)
+  assert.equal(sitesToVercel.get('x-graphrag-visitor-id'), sitesVisitor)
+  assert.equal(sitesToVercel.get('x-graphrag-proxy-secret'), 'sites-secret')
+
+  // proxyApi explicitly adds this trusted fallback after sanitization. The
+  // Vercel perimeter therefore reuses the Sites owner instead of minting a
+  // second anonymous visitor, then strips the fallback before FastAPI.
+  sitesToVercel.set('X-GraphRAG-Client-Visitor-ID', resolvedAtSites.id)
+  const resolvedAtVercel = getOrCreateVisitor(
+    sitesToVercel,
+    sitesToVercel.get('X-GraphRAG-Client-Visitor-ID'),
+  )
+  assert.equal(resolvedAtVercel.id, sitesVisitor)
+
+  const vercelToBackend = buildBackendHeaders(
+    sitesToVercel,
+    resolvedAtVercel.id,
+    'vercel-secret',
+    'vercel-request',
+  )
+  assert.equal(vercelToBackend.get('x-graphrag-client-visitor-id'), null)
+  assert.equal(vercelToBackend.get('x-graphrag-visitor-id'), sitesVisitor)
+  assert.equal(vercelToBackend.get('x-graphrag-proxy-secret'), 'vercel-secret')
+})
+
 test('rate-limit identities are stable and split visitor, IP, and combined dimensions', async () => {
   const visitorId = '123e4567-e89b-42d3-a456-426614174000'
   const request = new Request('https://example.com/api/v1/query', {
