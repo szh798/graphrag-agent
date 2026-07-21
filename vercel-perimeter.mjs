@@ -59,6 +59,17 @@ export function responseHeaders(visitor, requestUrl, requestId) {
   return headers
 }
 
+export function restoreRequestBodyLength(method, incomingHeaders, forwardedHeaders) {
+  const normalizedMethod = method.toUpperCase()
+  if (normalizedMethod === 'GET' || normalizedMethod === 'HEAD') return forwardedHeaders
+
+  const contentLength = incomingHeaders.get('content-length')?.trim() ?? ''
+  if (/^\d+$/.test(contentLength)) {
+    forwardedHeaders.set('Content-Length', contentLength)
+  }
+  return forwardedHeaders
+}
+
 export function rateLimitDimensions(identities, policy) {
   return [
     { id: `visitor:${identities.visitor}`, hourly: policy.hourly, daily: policy.daily },

@@ -15,6 +15,7 @@ import {
   bearerToken,
   jsonError,
   rateLimitDimensions,
+  restoreRequestBodyLength,
   responseHeaders,
   trustedInternalRoute,
 } from './vercel-perimeter.mjs'
@@ -210,6 +211,11 @@ export default async function middleware(request: Request): Promise<Response> {
     requestId,
     request.headers.get('authorization'),
   )
+  // buildBackendHeaders intentionally strips hop-by-hop framing headers for
+  // Cloudflare fetch proxies. Vercel's `next()` keeps the original request
+  // body, so it also needs the original length or the downstream Web Handler
+  // receives an empty stream.
+  restoreRequestBodyLength(request.method, request.headers, forwardedHeaders)
   if (isInternal) {
     if (request.headers.get('x-graphrag-internal-index') === '1') {
       forwardedHeaders.set('X-GraphRAG-Internal-Index', '1')
